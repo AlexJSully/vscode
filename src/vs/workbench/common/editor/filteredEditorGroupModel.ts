@@ -6,7 +6,7 @@
 import { IUntypedEditorInput, IMatchEditorOptions, EditorsOrder, GroupIdentifier } from '../editor.js';
 import { EditorInput } from './editorInput.js';
 import { Emitter } from '../../../base/common/event.js';
-import { IGroupModelChangeEvent, IReadonlyEditorGroupModel } from './editorGroupModel.js';
+import { IGroupModelChangeEvent, IReadonlyEditorGroupModel, ITabStack } from './editorGroupModel.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
 
 abstract class FilteredEditorGroupModel extends Disposable implements IReadonlyEditorGroupModel {
@@ -63,6 +63,10 @@ abstract class FilteredEditorGroupModel extends Disposable implements IReadonlyE
 			return undefined;
 		}
 		return this.filter(result[1]) ? result : undefined;
+	}
+
+	getTabStack(editor: EditorInput): ITabStack | undefined {
+		return this.filter(editor) ? this.model.getTabStack(editor) : undefined;
 	}
 
 	abstract get count(): number;
