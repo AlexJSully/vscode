@@ -9,14 +9,15 @@ import { workbenchInstantiationService, TestServiceAccessor, registerTestEditor,
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
-import { GroupDirection, IEditorGroupsService } from '../../../../services/editor/common/editorGroupsService.js';
+import { GroupDirection, IEditorGroup, IEditorGroupsService } from '../../../../services/editor/common/editorGroupsService.js';
 import { EditorService } from '../../../../services/editor/browser/editorService.js';
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { resolveCommandsContext } from '../../../../browser/parts/editor/editorCommandsContext.js';
+import { resolveCommandsContext, resolveTabStack, resolveTabStackEditors, resolveTabStackGroupedEditors } from '../../../../browser/parts/editor/editorCommandsContext.js';
 import { IEditorCommandsContext } from '../../../../common/editor.js';
 import { IListService, WorkbenchListWidget } from '../../../../../platform/list/browser/listService.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 
 class TestListService implements IListService {
 	declare readonly _serviceBrand: undefined;
@@ -54,8 +55,8 @@ suite('Resolving Editor Commands Context', () => {
 		return disposables.add(new TestEditorInput(URI.parse(`file://${id}`), 'testInput'));
 	}
 
-	async function createServices(): Promise<TestServiceAccessor> {
-		const instantiationService = workbenchInstantiationService(undefined, disposables);
+	async function createServices(configurationService?: TestConfigurationService): Promise<TestServiceAccessor> {
+		const instantiationService = workbenchInstantiationService(configurationService ? { configurationService: () => configurationService } : undefined, disposables);
 
 		const part = await createEditorPart(instantiationService, disposables);
 		instantiationService.stub(IEditorGroupsService, part);
@@ -210,6 +211,119 @@ suite('Resolving Editor Commands Context', () => {
 		assert.strictEqual(resolvedContext.groupedEditors[0].editors[0], input1);
 		assert.notStrictEqual(resolvedContext.groupedEditors[0].editors[0], input2);
 		assert.strictEqual(resolvedContext.preserveFocus, false);
+	});
+
+	function createTabStacksConfigurationService(): TestConfigurationService {
+		const configurationService = new TestConfigurationService({ workbench: { editor: { enableTabStacks: true } } });
+		disposables.add(configurationService.onDidChangeConfigurationEmitter);
+
+		return configurationService;
+	}
+
+	function editorNames(editors: readonly EditorInput[]): string[] {
+		return editors.map(editor => editor.resource?.authority ?? '');
+	}
+
+	test('tab stack editors are the editors of the first group without sticky editors', async () => {
+		const accessor = await createServices(createTabStacksConfigurationService());
+		const editorGroupService = accessor.editorGroupService;
+
+		const group1 = editorGroupService.activeGroup;
+		const group2 = editorGroupService.addGroup(group1, GroupDirection.RIGHT);
+
+		const stickyInput = input('sticky');
+		const input1 = input('1');
+		const input2 = input('2');
+		await group1.openEditor(stickyInput, { pinned: true, sticky: true });
+		await group1.openEditor(input1, { pinned: true });
+		await group1.openEditor(input2, { pinned: true });
+
+		const input3 = input('3');
+		await group2.openEditor(input3, { pinned: true });
+
+		const resolve = (...groupedEditors: { group: IEditorGroup; editors: EditorInput[] }[]) => {
+			const resolved = resolveTabStackEditors({ groupedEditors, preserveFocus: false }, editorGroupService);
+
+			return resolved && { group: resolved.group.id, editors: editorNames(resolved.editors) };
+		};
+
+		assert.deepStrictEqual({
+			selection: resolve({ group: group1, editors: [input2, stickyInput, input1] }, { group: group2, editors: [input3] }),
+			stickyOnly: resolve({ group: group1, editors: [stickyInput] }, { group: group2, editors: [input3] }),
+			noEditor: resolve({ group: group1, editors: [] })
+		}, {
+			selection: { group: group1.id, editors: ['2', '1'] },
+			stickyOnly: undefined,
+			noEditor: undefined
+		});
+	});
+
+	test('tab stack of the right-clicked editor rather than of the active editor', async () => {
+		const accessor = await createServices(createTabStacksConfigurationService());
+		const group = accessor.editorGroupService.activeGroup;
+
+		const [input1, input2, input3, input4, input5] = ['1', '2', '3', '4', '5'].map(id => input(id));
+		for (const editor of [input1, input2, input3, input4, input5]) {
+			await group.openEditor(editor, { pinned: true });
+		}
+
+		group.addEditorsToTabStack([input1, input2]);
+		group.addEditorsToTabStack([input3, input4]);
+		const [tabStackA, tabStackB] = group.tabStacks;
+		group.updateTabStack(tabStackA.id, { label: 'A' });
+		group.updateTabStack(tabStackB.id, { label: 'B' });
+
+		await group.openEditor(input4);
+		await group.setSelection(input4, [input1]);
+
+		const resolve = (...commandArgs: unknown[]) => {
+			const resolved = resolveTabStack(resolveCommandsContext(commandArgs, accessor.editorService, accessor.editorGroupService, testListService), accessor.editorGroupService);
+
+			return resolved && { tabStack: resolved.tabStack.label, editors: editorNames(resolved.editors) };
+		};
+		const tabContext = (editor: EditorInput): IEditorCommandsContext => ({ groupId: group.id, editorIndex: group.getIndexOfEditor(editor) });
+
+		assert.deepStrictEqual({
+			activeEditor: resolve(),
+			selectedTab: resolve(tabContext(input1)),
+			unselectedTab: resolve(tabContext(input2)),
+			tabOutsideOfTabStacks: resolve(tabContext(input5))
+		}, {
+			activeEditor: { tabStack: 'B', editors: ['3', '4'] },
+			selectedTab: { tabStack: 'A', editors: ['1', '2'] },
+			unselectedTab: { tabStack: 'A', editors: ['1', '2'] },
+			tabOutsideOfTabStacks: undefined
+		});
+	});
+
+	test('tab stack resolvers resolve nothing while tab stacks are disabled', async () => {
+		const accessor = await createServices(createTabStacksConfigurationService());
+		const group = accessor.editorGroupService.activeGroup;
+
+		const input1 = input('1');
+		await group.openEditor(input1, { pinned: true });
+		group.addEditorsToTabStack([input1]);
+
+		const resolveAll = () => {
+			const resolvedContext = resolveCommandsContext([], accessor.editorService, accessor.editorGroupService, testListService);
+			const tabStackEditors = resolveTabStackEditors(resolvedContext, accessor.editorGroupService);
+			const tabStack = resolveTabStack(resolvedContext, accessor.editorGroupService);
+
+			return {
+				tabStackEditors: tabStackEditors && editorNames(tabStackEditors.editors),
+				tabStack: tabStack && editorNames(tabStack.editors),
+				groupedEditors: resolveTabStackGroupedEditors(resolvedContext, accessor.editorGroupService).map(({ editors }) => editorNames(editors))
+			};
+		};
+
+		const singleTab = accessor.editorGroupService.getPart(group).enforcePartOptions({ showTabs: 'single' });
+		const whileSingleTab = resolveAll();
+		singleTab.dispose();
+
+		assert.deepStrictEqual({ whileSingleTab, withMultipleTabs: resolveAll() }, {
+			whileSingleTab: { tabStackEditors: undefined, tabStack: undefined, groupedEditors: [] },
+			withMultipleTabs: { tabStackEditors: ['1'], tabStack: ['1'], groupedEditors: [['1']] }
+		});
 	});
 
 	ensureNoDisposablesAreLeakedInTestSuite();

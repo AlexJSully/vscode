@@ -147,6 +147,13 @@ export class EditorTitleControl extends Themable {
 		this.editorTabsControl.updateEditorSelections();
 	}
 
+	/**
+	 * Forwards to {@link IEditorTabsControl.updateTabStacks} of the current tabs control.
+	 */
+	updateTabStacks(): void {
+		this.editorTabsControl.updateTabStacks();
+	}
+
 	updateEditorLabel(editor: EditorInput): void {
 		this.editorTabsControl.updateEditorLabel(editor);
 		if (this.groupView.activeEditor === editor) {

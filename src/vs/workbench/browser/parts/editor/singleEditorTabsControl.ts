@@ -202,6 +202,8 @@ export class SingleEditorTabsControl extends EditorTabsControl {
 
 	updateEditorSelections(): void { }
 
+	updateTabStacks(): void { }
+
 	updateEditorLabel(editor: EditorInput): void {
 		this.ifEditorIsActive(editor, () => this.redraw());
 	}

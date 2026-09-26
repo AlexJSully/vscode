@@ -12,7 +12,8 @@ import {
 	EditorPartMultipleEditorGroupsContext, ActiveEditorDirtyContext, ActiveEditorGroupLockedContext, ActiveEditorCanSplitInGroupContext, SideBySideEditorActiveContext,
 	EditorTabsVisibleContext, ActiveEditorLastInGroupContext, EditorPartMaximizedEditorGroupContext, MultipleEditorGroupsContext, InEditorZenModeContext,
 	IsAuxiliaryWindowContext, ActiveCompareEditorCanSwapContext, MultipleEditorsSelectedInGroupContext, SplitEditorsVertically, ActiveEditorCannotCloseContext,
-	IsSessionsWindowContext, ActiveCustomEditorDiffCanToggleLayoutContext, ActiveCustomEditorTextDiffContext, EditorPartModalContext
+	IsSessionsWindowContext, ActiveCustomEditorDiffCanToggleLayoutContext, ActiveCustomEditorTextDiffContext, EditorPartModalContext,
+	TabStacksEnabledContext, ActiveEditorInTabStackContext, EditorGroupHasTabStacksContext
 } from '../../../common/contextkeys.js';
 import { SideBySideEditorInput, SideBySideEditorInputSerializer } from '../../../common/editor/sideBySideEditorInput.js';
 import { TextResourceEditor } from './textResourceEditor.js';
@@ -53,8 +54,11 @@ import {
 	SPLIT_EDITOR_RIGHT, SPLIT_EDITOR_UP, TOGGLE_KEEP_EDITORS_COMMAND_ID, UNPIN_EDITOR_COMMAND_ID, setup as registerEditorCommands, REOPEN_WITH_COMMAND_ID,
 	TOGGLE_LOCK_GROUP_COMMAND_ID, UNLOCK_GROUP_COMMAND_ID, SPLIT_EDITOR_IN_GROUP, JOIN_EDITOR_IN_GROUP, FOCUS_FIRST_SIDE_EDITOR, FOCUS_SECOND_SIDE_EDITOR, TOGGLE_SPLIT_EDITOR_IN_GROUP_LAYOUT, LOCK_GROUP_COMMAND_ID,
 	SPLIT_EDITOR, TOGGLE_MAXIMIZE_EDITOR_GROUP, MOVE_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, COPY_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, MOVE_EDITOR_GROUP_INTO_NEW_WINDOW_COMMAND_ID, COPY_EDITOR_GROUP_INTO_NEW_WINDOW_COMMAND_ID,
-	NEW_EMPTY_EDITOR_WINDOW_COMMAND_ID, MOVE_EDITOR_INTO_RIGHT_GROUP, MOVE_EDITOR_INTO_LEFT_GROUP, MOVE_EDITOR_INTO_ABOVE_GROUP, MOVE_EDITOR_INTO_BELOW_GROUP
+	NEW_EMPTY_EDITOR_WINDOW_COMMAND_ID, MOVE_EDITOR_INTO_RIGHT_GROUP, MOVE_EDITOR_INTO_LEFT_GROUP, MOVE_EDITOR_INTO_ABOVE_GROUP, MOVE_EDITOR_INTO_BELOW_GROUP,
+	ADD_EDITOR_TO_NEW_TAB_STACK_COMMAND_ID, ADD_EDITOR_TO_TAB_STACK_COMMAND_ID, REMOVE_EDITOR_FROM_TAB_STACK_COMMAND_ID, RENAME_TAB_STACK_COMMAND_ID, CHANGE_TAB_STACK_COLOR_COMMAND_ID,
+	REMOVE_TAB_STACK_COMMAND_ID, CLOSE_TAB_STACK_COMMAND_ID
 } from './editorCommands.js';
+import { EditorTabStackContextMenuId } from './editor.js';
 import { DIFF_SWAP_SIDES, DIFF_VIEW_MODE_INLINE_TEMPORARY, GOTO_NEXT_CHANGE, GOTO_PREVIOUS_CHANGE, SET_DIFF_VIEW_MODE_AUTOMATIC, SET_DIFF_VIEW_MODE_INLINE, SET_DIFF_VIEW_MODE_SIDE_BY_SIDE, TOGGLE_DIFF_IGNORE_TRIM_WHITESPACE, TOGGLE_DIFF_SIDE_BY_SIDE } from './diffEditorCommands.js';
 import { inQuickPickContext, getQuickNavigateHandler } from '../../quickaccess.js';
 import { KeybindingsRegistry, KeybindingWeight } from '../../../../platform/keybinding/common/keybindingsRegistry.js';
@@ -400,12 +404,21 @@ MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: REOPEN_W
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: KEEP_EDITOR_COMMAND_ID, title: localize('keepOpen', "Keep Open"), precondition: ActiveEditorPinnedContext.toNegated() }, group: '3_preview', order: 10, when: ContextKeyExpr.has('config.workbench.editor.enablePreview') });
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: PIN_EDITOR_COMMAND_ID, title: localize('pin', "Pin") }, group: '3_preview', order: 20, when: ActiveEditorStickyContext.toNegated() });
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: UNPIN_EDITOR_COMMAND_ID, title: localize('unpin', "Unpin") }, group: '3_preview', order: 20, when: ActiveEditorStickyContext });
+MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: ADD_EDITOR_TO_NEW_TAB_STACK_COMMAND_ID, title: localize('addToNewTabStack', "Add to New Tab Stack") }, group: '4_tabStacks', order: 10, when: ContextKeyExpr.and(TabStacksEnabledContext, ActiveEditorStickyContext.toNegated()) });
+MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: ADD_EDITOR_TO_TAB_STACK_COMMAND_ID, title: localize('addToTabStack', "Add to Tab Stack...") }, group: '4_tabStacks', order: 20, when: ContextKeyExpr.and(TabStacksEnabledContext, ActiveEditorStickyContext.toNegated(), EditorGroupHasTabStacksContext) });
+MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: REMOVE_EDITOR_FROM_TAB_STACK_COMMAND_ID, title: localize('removeFromTabStack', "Remove from Tab Stack") }, group: '4_tabStacks', order: 30, when: ContextKeyExpr.and(TabStacksEnabledContext, ActiveEditorInTabStackContext) });
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: SPLIT_EDITOR, title: localize('splitRight', "Split Right") }, group: '5_split', order: 10, when: SplitEditorsVertically.negate() });
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: SPLIT_EDITOR, title: localize('splitDown', "Split Down") }, group: '5_split', order: 10, when: SplitEditorsVertically });
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { submenu: MenuId.EditorSplitMoveSubmenu, title: localize('splitAndMoveEditor', "Split & Move"), group: '5_split', order: 15 });
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: MOVE_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, title: localize('moveToNewWindow', "Move into New Window") }, group: '7_new_window', order: 10 });
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { command: { id: COPY_EDITOR_INTO_NEW_WINDOW_COMMAND_ID, title: localize('copyToNewWindow', "Copy into New Window") }, group: '7_new_window', order: 20 });
 MenuRegistry.appendMenuItem(MenuId.EditorTitleContext, { submenu: MenuId.EditorTitleContextShare, title: localize('share', "Share"), group: '11_share', order: -1, when: MultipleEditorsSelectedInGroupContext.negate() });
+
+// Editor Tab Stack Context Menu
+MenuRegistry.appendMenuItem(EditorTabStackContextMenuId, { command: { id: RENAME_TAB_STACK_COMMAND_ID, title: localize('renameTabStackMenu', "Rename...") }, group: '1_edit', order: 10 });
+MenuRegistry.appendMenuItem(EditorTabStackContextMenuId, { command: { id: CHANGE_TAB_STACK_COLOR_COMMAND_ID, title: localize('changeTabStackColorMenu', "Change Color...") }, group: '1_edit', order: 20 });
+MenuRegistry.appendMenuItem(EditorTabStackContextMenuId, { command: { id: REMOVE_TAB_STACK_COMMAND_ID, title: localize('removeTabStackMenu', "Remove Tab Stack") }, group: '2_remove', order: 10 });
+MenuRegistry.appendMenuItem(EditorTabStackContextMenuId, { command: { id: CLOSE_TAB_STACK_COMMAND_ID, title: localize('closeTabStackMenu', "Close Tab Stack") }, group: '3_close', order: 10 });
 
 // Editor Title Context Menu: Split & Move Editor Submenu
 MenuRegistry.appendMenuItem(MenuId.EditorSplitMoveSubmenu, { command: { id: SPLIT_EDITOR_UP, title: localize('splitUp', "Split Up") }, group: '1_split', order: 10 });

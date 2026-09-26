@@ -4,11 +4,12 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { localize } from '../../nls.js';
-import { registerColor, editorBackground, contrastBorder, transparent, opaque, oneOf, editorWidgetBackground, textLinkForeground, lighten, darken, focusBorder, activeContrastBorder, editorWidgetForeground, editorErrorForeground, editorWarningForeground, editorInfoForeground, treeIndentGuidesStroke, errorForeground, listActiveSelectionBackground, listActiveSelectionForeground, listInactiveSelectionBackground, listInactiveSelectionForeground, listHoverBackground, listHoverForeground, editorForeground, toolbarHoverBackground, inputBorder, widgetBorder, scrollbarShadow } from '../../platform/theme/common/colorRegistry.js';
+import { registerColor, editorBackground, contrastBorder, transparent, opaque, oneOf, editorWidgetBackground, textLinkForeground, lighten, darken, focusBorder, activeContrastBorder, editorWidgetForeground, editorErrorForeground, editorWarningForeground, editorInfoForeground, treeIndentGuidesStroke, errorForeground, listActiveSelectionBackground, listActiveSelectionForeground, listInactiveSelectionBackground, listInactiveSelectionForeground, listHoverBackground, listHoverForeground, editorForeground, toolbarHoverBackground, inputBorder, widgetBorder, scrollbarShadow, chartsBlue, chartsRed, chartsYellow, chartsGreen, chartsPurple, ColorIdentifier } from '../../platform/theme/common/colorRegistry.js';
 import { foreground } from '../../platform/theme/common/colors/baseColors.js';
 import { IColorTheme } from '../../platform/theme/common/themeService.js';
 import { Color } from '../../base/common/color.js';
 import { ColorScheme } from '../../platform/theme/common/theme.js';
+import type { TabStackPresetColor } from './editor/editorGroupModel.js';
 
 // < --- Workbench (not customizable) --- >
 
@@ -200,6 +201,64 @@ export const TAB_UNFOCUSED_INACTIVE_MODIFIED_BORDER = registerColor('tab.unfocus
 	hcDark: Color.white,
 	hcLight: contrastBorder
 }, localize('unfocusedINactiveModifiedBorder', "Border on the top of modified inactive tabs in an unfocused group. Tabs are the containers for editors in the editor area. Multiple tabs can be opened in one editor group. There can be multiple editor groups."));
+
+//#endregion
+
+//#region Tab Stack Colors
+
+const TAB_STACK_BLUE = registerColor('tabStack.blue', chartsBlue, localize('tabStackBlue', "Color of tab stacks that use the blue color. A tab stack gathers adjacent tabs under a colored header, optionally named, that can be collapsed to hide them."));
+
+const TAB_STACK_PURPLE = registerColor('tabStack.purple', chartsPurple, localize('tabStackPurple', "Color of tab stacks that use the purple color. A tab stack gathers adjacent tabs under a colored header, optionally named, that can be collapsed to hide them."));
+
+const TAB_STACK_PINK = registerColor('tabStack.pink', {
+	dark: '#E27AB3',
+	light: '#B8316F',
+	hcDark: '#F5A3CF',
+	hcLight: '#99215A'
+}, localize('tabStackPink', "Color of tab stacks that use the pink color. A tab stack gathers adjacent tabs under a colored header, optionally named, that can be collapsed to hide them."));
+
+const TAB_STACK_RED = registerColor('tabStack.red', chartsRed, localize('tabStackRed', "Color of tab stacks that use the red color. A tab stack gathers adjacent tabs under a colored header, optionally named, that can be collapsed to hide them."));
+
+const TAB_STACK_ORANGE = registerColor('tabStack.orange', {
+	dark: '#EE9D28',
+	light: '#B35C00',
+	hcDark: '#FFB86C',
+	hcLight: '#8A4600'
+}, localize('tabStackOrange', "Color of tab stacks that use the orange color. A tab stack gathers adjacent tabs under a colored header, optionally named, that can be collapsed to hide them."));
+
+const TAB_STACK_YELLOW = registerColor('tabStack.yellow', chartsYellow, localize('tabStackYellow', "Color of tab stacks that use the yellow color. A tab stack gathers adjacent tabs under a colored header, optionally named, that can be collapsed to hide them."));
+
+const TAB_STACK_GREEN = registerColor('tabStack.green', chartsGreen, localize('tabStackGreen', "Color of tab stacks that use the green color. A tab stack gathers adjacent tabs under a colored header, optionally named, that can be collapsed to hide them."));
+
+const TAB_STACK_CYAN = registerColor('tabStack.cyan', {
+	dark: '#4FC1D9',
+	light: '#0A7A8F',
+	hcDark: '#7FE0F0',
+	hcLight: '#075E6E'
+}, localize('tabStackCyan', "Color of tab stacks that use the cyan color. A tab stack gathers adjacent tabs under a colored header, optionally named, that can be collapsed to hide them."));
+
+const TAB_STACK_GRAY = registerColor('tabStack.gray', {
+	dark: '#9DA5B0',
+	light: '#6E7681',
+	hcDark: '#C8CCD2',
+	hcLight: '#4F555C'
+}, localize('tabStackGray', "Color of tab stacks that use the gray color. A tab stack gathers adjacent tabs under a colored header, optionally named, that can be collapsed to hide them."));
+
+/**
+ * The theme color of each preset tab stack color. Custom tab stack colors are
+ * not theme colors and look the same in every theme.
+ */
+export const TAB_STACK_COLOR_IDS: { readonly [color in TabStackPresetColor]: ColorIdentifier } = {
+	blue: TAB_STACK_BLUE,
+	purple: TAB_STACK_PURPLE,
+	pink: TAB_STACK_PINK,
+	red: TAB_STACK_RED,
+	orange: TAB_STACK_ORANGE,
+	yellow: TAB_STACK_YELLOW,
+	green: TAB_STACK_GREEN,
+	cyan: TAB_STACK_CYAN,
+	gray: TAB_STACK_GRAY
+};
 
 //#endregion
 

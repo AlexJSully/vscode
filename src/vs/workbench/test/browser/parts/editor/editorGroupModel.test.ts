@@ -2640,6 +2640,7 @@ suite('EditorGroupModel', () => {
 			assert.deepStrictEqual(indices, indices.map((_, i) => indices[0] + i), 'the editors of a tab stack are adjacent');
 			assert.ok(tabStack.editors.every(editor => !group.isSticky(editor) && group.isPinned(editor)), 'sticky and preview editors are never in a tab stack');
 			assert.ok(!tabStack.collapsed || group.activeEditor === null || !tabStack.editors.includes(group.activeEditor), 'a collapsed tab stack never contains the active editor');
+			assert.ok(!tabStack.collapsed || tabStack.editors.every(editor => !group.isSelected(editor)), 'an editor hidden in a collapsed tab stack is never selected');
 
 			letters.set(tabStack.id, String.fromCharCode('a'.charCodeAt(0) + letters.size));
 		}
@@ -3080,6 +3081,28 @@ suite('EditorGroupModel', () => {
 		}, {
 			inactiveTabStack: ['0', '3*'],
 			activeTabStack: ['0', '3*'],
+		});
+	});
+
+	test('tab stacks: selected editors that end up hidden in a collapsed tab stack leave the selection', () => {
+		function afterJoining(state: string, selectedIds: string[], operation: (testGroup: ITabStackTestGroup) => void): string {
+			const testGroup = createTabStackTestGroup(state);
+			const [activeId, ...inactiveIds] = selectedIds;
+			testGroup.group.setSelection(testGroup.editor(activeId), inactiveIds.map(testGroup.editor));
+
+			operation(testGroup);
+
+			return `${tabStackState(testGroup.group)} | ${testGroup.group.selectedEditors.map(editorId).join(' ')}`;
+		}
+
+		assert.deepStrictEqual({
+			added: afterJoining('0* 1 2a^ 3', ['0', '1', '3'], ({ group, editor, tabStack }) => group.addEditorsToTabStack([editor('1')], tabStack('a'))),
+			moved: afterJoining('0* 1 2a^ 3a^ 4', ['0', '1', '4'], ({ group, editor }) => group.moveEditor(editor('4'), 3)),
+			addedWithActiveEditor: afterJoining('0 1* 2a^', ['1', '0'], ({ group, editor, tabStack }) => group.addEditorsToTabStack([editor('0'), editor('1')], tabStack('a'))),
+		}, {
+			added: '0* 1a^ 2a^ 3 | 0 3',
+			moved: '0* 1 2a^ 4a^ 3a^ | 0 1',
+			addedWithActiveEditor: '0a 1a* 2a | 0 1',
 		});
 	});
 

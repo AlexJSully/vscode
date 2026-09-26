@@ -27,7 +27,7 @@ import { ITelemetryService } from '../../../../platform/telemetry/common/telemet
 import { ActiveGroupEditorsByMostRecentlyUsedQuickAccess } from './editorQuickAccess.js';
 import { SideBySideEditor } from './sideBySideEditor.js';
 import { TextDiffEditor } from './textDiffEditor.js';
-import { ActiveEditorCanSplitInGroupContext, ActiveEditorGroupEmptyContext, ActiveEditorGroupLockedContext, ActiveEditorStickyContext, EditorPartModalContext, EditorPartModalMaximizedContext, EditorPartModalNavigationContext, EditorPartModalSidebarContext, IsSessionsWindowContext, MultipleEditorGroupsContext, SideBySideEditorActiveContext, TextCompareEditorActiveContext } from '../../../common/contextkeys.js';
+import { ActiveEditorCanSplitInGroupContext, ActiveEditorGroupEmptyContext, ActiveEditorGroupLockedContext, ActiveEditorInTabStackContext, ActiveEditorStickyContext, EditorPartModalContext, EditorPartModalMaximizedContext, EditorPartModalNavigationContext, EditorPartModalSidebarContext, IsSessionsWindowContext, MultipleEditorGroupsContext, SideBySideEditorActiveContext, TabStacksEnabledContext, TextCompareEditorActiveContext } from '../../../common/contextkeys.js';
 import { CloseDirection, EditorInputCapabilities, EditorsOrder, IResourceDiffEditorInput, IUntitledTextResourceEditorInput, isDiffEditorInput, isEditorInputWithOptionsAndGroup } from '../../../common/editor.js';
 import { IMultiDiffEditorOptions } from '../../../../editor/common/multiDiffEditor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
@@ -43,9 +43,10 @@ import { IUntitledTextEditorService } from '../../../services/untitled/common/un
 import { IWorkingCopyEditorService } from '../../../services/workingCopy/common/workingCopyEditorService.js';
 import { IWorkingCopyService } from '../../../services/workingCopy/common/workingCopyService.js';
 import { DIFF_FOCUS_OTHER_SIDE, DIFF_FOCUS_PRIMARY_SIDE, DIFF_FOCUS_SECONDARY_SIDE, registerDiffEditorCommands } from './diffEditorCommands.js';
-import { IResolvedEditorCommandsContext, resolveCommandsContext } from './editorCommandsContext.js';
-import { prepareMoveCopyEditors } from './editor.js';
+import { IResolvedEditorCommandsContext, resolveCommandsContext, resolveTabStack, resolveTabStackEditors, resolveTabStackGroupedEditors } from './editorCommandsContext.js';
+import { getMoveTabIndex, getMoveTabsRunIndex, IEditorGroupView, prepareMoveCopyEditors } from './editor.js';
 import { IRange } from '../../../../editor/common/core/range.js';
+import { inputTabStackLabel, pickTabStack, pickTabStackColor } from './tabStackPickers.js';
 
 export const CLOSE_SAVED_EDITORS_COMMAND_ID = 'workbench.action.closeUnmodifiedEditors';
 export const CLOSE_EDITORS_IN_GROUP_COMMAND_ID = 'workbench.action.closeEditorsInGroup';
@@ -70,6 +71,22 @@ export const REOPEN_ACTIVE_EDITOR_WITH_COMMAND_ID = 'reopenActiveEditorWith';
 
 export const PIN_EDITOR_COMMAND_ID = 'workbench.action.pinEditor';
 export const UNPIN_EDITOR_COMMAND_ID = 'workbench.action.unpinEditor';
+
+/** Adds the editors the command applies to, sticky editors excepted, to a new tab stack. */
+export const ADD_EDITOR_TO_NEW_TAB_STACK_COMMAND_ID = 'workbench.action.addEditorToNewTabStack';
+/** Asks for a tab stack and adds the editors the command applies to, sticky editors excepted, to it. */
+export const ADD_EDITOR_TO_TAB_STACK_COMMAND_ID = 'workbench.action.addEditorToTabStack';
+/** Removes the editors the command applies to from their tab stacks. */
+export const REMOVE_EDITOR_FROM_TAB_STACK_COMMAND_ID = 'workbench.action.removeEditorFromTabStack';
+/** Asks for a new name of the tab stack of the editor the command applies to. */
+export const RENAME_TAB_STACK_COMMAND_ID = 'workbench.action.renameTabStack';
+/** Asks for a new color of the tab stack of the editor the command applies to. */
+export const CHANGE_TAB_STACK_COLOR_COMMAND_ID = 'workbench.action.changeTabStackColor';
+/** Deletes the tab stack of the editor the command applies to, keeping its editors open. */
+export const REMOVE_TAB_STACK_COMMAND_ID = 'workbench.action.removeTabStack';
+/** Closes the editors of the tab stack of the editor the command applies to. */
+export const CLOSE_TAB_STACK_COMMAND_ID = 'workbench.action.closeTabStack';
+const COLLAPSE_TAB_STACK_COMMAND_ID = 'workbench.action.collapseTabStack';
 
 export const SPLIT_EDITOR = 'workbench.action.splitEditor';
 export const SPLIT_EDITOR_UP = 'workbench.action.splitEditorUp';
@@ -254,36 +271,21 @@ function registerEditorMoveCopyCommand(): void {
 			editors = [...editors].reverse();
 		}
 
+		// Adjacent editors move as one run so that a selected tab stack stays together
+		const runIndex = editors.length > 1 && group.tabStacks.length > 0 ? getMoveTabsRunIndex(args, group, editors) : undefined;
+		if (runIndex !== undefined) {
+			(group as IEditorGroupView).moveEditorsWithinGroup(editors, runIndex);
+
+			return;
+		}
+
 		for (const editor of editors) {
 			moveTab(args, group, editor);
 		}
 	}
 
 	function moveTab(args: SelectedEditorsMoveCopyArguments, group: IEditorGroup, editor: EditorInput): void {
-		let index = group.getIndexOfEditor(editor);
-		switch (args.to) {
-			case 'first':
-				index = 0;
-				break;
-			case 'last':
-				index = group.count - 1;
-				break;
-			case 'left':
-				index = index - (args.value ?? 1);
-				break;
-			case 'right':
-				index = index + (args.value ?? 1);
-				break;
-			case 'center':
-				index = Math.round(group.count / 2) - 1;
-				break;
-			case 'position':
-				index = (args.value ?? 1) - 1;
-				break;
-		}
-
-		index = index < 0 ? 0 : index >= group.count ? group.count - 1 : index;
-		group.moveEditor(editor, group, { index });
+		group.moveEditor(editor, group, { index: getMoveTabIndex(args, group.getIndexOfEditor(editor), group.count) });
 	}
 
 	function moveCopyEditorsToGroup(isMove: boolean, args: SelectedEditorsMoveCopyArguments, sourceGroup: IEditorGroup, editors: EditorInput[], accessor: ServicesAccessor): void {
@@ -1672,6 +1674,169 @@ function registerModalEditorCommands(): void {
 	});
 }
 
+function registerTabStackCommands(): void {
+	const notStickyPrecondition = ContextKeyExpr.and(TabStacksEnabledContext, ActiveEditorStickyContext.toNegated());
+	const inTabStackPrecondition = ContextKeyExpr.and(TabStacksEnabledContext, ActiveEditorInTabStackContext);
+
+	function resolveContext(accessor: ServicesAccessor, args: unknown[]): IResolvedEditorCommandsContext {
+		return resolveCommandsContext(args, accessor.get(IEditorService), accessor.get(IEditorGroupsService), accessor.get(IListService));
+	}
+
+	registerAction2(class extends Action2 {
+		constructor() {
+			super({
+				id: ADD_EDITOR_TO_NEW_TAB_STACK_COMMAND_ID,
+				title: localize2('addEditorToNewTabStack', "Add Editor to New Tab Stack"),
+				category: Categories.View,
+				precondition: notStickyPrecondition,
+				f1: true
+			});
+		}
+		run(accessor: ServicesAccessor, ...args: unknown[]): void {
+			const resolved = resolveTabStackEditors(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
+			resolved?.group.addEditorsToTabStack(resolved.editors);
+		}
+	});
+
+	registerAction2(class extends Action2 {
+		constructor() {
+			super({
+				id: ADD_EDITOR_TO_TAB_STACK_COMMAND_ID,
+				title: localize2('addEditorToTabStack', "Add Editor to Tab Stack..."),
+				category: Categories.View,
+				precondition: notStickyPrecondition,
+				f1: true
+			});
+		}
+		async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
+			const quickInputService = accessor.get(IQuickInputService);
+			const resolved = resolveTabStackEditors(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
+			if (!resolved) {
+				return;
+			}
+
+			const pick = await pickTabStack(quickInputService, resolved.group.tabStacks);
+			if (pick) {
+				resolved.group.addEditorsToTabStack(resolved.editors, pick.tabStack);
+			}
+		}
+	});
+
+	registerAction2(class extends Action2 {
+		constructor() {
+			super({
+				id: REMOVE_EDITOR_FROM_TAB_STACK_COMMAND_ID,
+				title: localize2('removeEditorFromTabStack', "Remove Editor from Tab Stack"),
+				category: Categories.View,
+				precondition: inTabStackPrecondition,
+				f1: true
+			});
+		}
+		run(accessor: ServicesAccessor, ...args: unknown[]): void {
+			for (const { group, editors } of resolveTabStackGroupedEditors(resolveContext(accessor, args), accessor.get(IEditorGroupsService))) {
+				group.removeEditorsFromTabStack(editors);
+			}
+		}
+	});
+
+	registerAction2(class extends Action2 {
+		constructor() {
+			super({
+				id: RENAME_TAB_STACK_COMMAND_ID,
+				title: localize2('renameTabStack', "Rename Tab Stack..."),
+				category: Categories.View,
+				precondition: inTabStackPrecondition,
+				f1: true
+			});
+		}
+		async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
+			const quickInputService = accessor.get(IQuickInputService);
+			const resolved = resolveTabStack(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
+			if (!resolved) {
+				return;
+			}
+
+			const label = await inputTabStackLabel(quickInputService, resolved.tabStack.label);
+			if (label !== undefined) {
+				resolved.group.updateTabStack(resolved.tabStack.id, { label });
+			}
+		}
+	});
+
+	registerAction2(class extends Action2 {
+		constructor() {
+			super({
+				id: CHANGE_TAB_STACK_COLOR_COMMAND_ID,
+				title: localize2('changeTabStackColor', "Change Tab Stack Color..."),
+				category: Categories.View,
+				precondition: inTabStackPrecondition,
+				f1: true
+			});
+		}
+		async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
+			const quickInputService = accessor.get(IQuickInputService);
+			const resolved = resolveTabStack(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
+			if (!resolved) {
+				return;
+			}
+
+			const color = await pickTabStackColor(quickInputService, resolved.tabStack.color);
+			if (color) {
+				resolved.group.updateTabStack(resolved.tabStack.id, { color });
+			}
+		}
+	});
+
+	registerAction2(class extends Action2 {
+		constructor() {
+			super({
+				id: COLLAPSE_TAB_STACK_COMMAND_ID,
+				title: localize2('collapseTabStack', "Collapse Tab Stack"),
+				category: Categories.View,
+				precondition: inTabStackPrecondition,
+				f1: true
+			});
+		}
+		run(accessor: ServicesAccessor, ...args: unknown[]): void {
+			const resolved = resolveTabStack(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
+			resolved?.group.updateTabStack(resolved.tabStack.id, { collapsed: true });
+		}
+	});
+
+	registerAction2(class extends Action2 {
+		constructor() {
+			super({
+				id: REMOVE_TAB_STACK_COMMAND_ID,
+				title: localize2('removeTabStack', "Remove Tab Stack"),
+				category: Categories.View,
+				precondition: inTabStackPrecondition,
+				f1: true
+			});
+		}
+		run(accessor: ServicesAccessor, ...args: unknown[]): void {
+			const resolved = resolveTabStack(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
+			resolved?.group.removeEditorsFromTabStack(resolved.editors);
+		}
+	});
+
+	registerAction2(class extends Action2 {
+		constructor() {
+			super({
+				id: CLOSE_TAB_STACK_COMMAND_ID,
+				title: localize2('closeTabStack', "Close Tab Stack"),
+				category: Categories.View,
+				precondition: inTabStackPrecondition,
+				f1: true
+			});
+		}
+		async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
+			const resolvedContext = resolveContext(accessor, args);
+			const resolved = resolveTabStack(resolvedContext, accessor.get(IEditorGroupsService));
+			await resolved?.group.closeEditors(resolved.editors, { preserveFocus: resolvedContext.preserveFocus });
+		}
+	});
+}
+
 function isModalEditorPart(obj: unknown): obj is IModalEditorPart {
 	const part = obj as IModalEditorPart | undefined;
 
@@ -1699,4 +1864,5 @@ export function setup(): void {
 	registerSplitEditorCommands();
 	registerFocusEditorGroupWihoutWrapCommands();
 	registerModalEditorCommands();
+	registerTabStackCommands();
 }

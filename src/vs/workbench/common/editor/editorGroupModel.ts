@@ -46,7 +46,10 @@ export type TabStackPresetColor = typeof TAB_STACK_COLORS[number];
  */
 export type TabStackColor = TabStackPresetColor | `#${string}`;
 
-function isTabStackPresetColor(value: string): value is TabStackPresetColor {
+/**
+ * Returns whether the value is the name of a preset tab stack color.
+ */
+export function isTabStackPresetColor(value: string): value is TabStackPresetColor {
 	return (TAB_STACK_COLORS as readonly string[]).includes(value);
 }
 
@@ -134,16 +137,28 @@ export interface ITabStackUpdate {
  * A single move of an editor within its group, with indices that are valid at
  * the time of the move.
  */
-interface ITabStackEditorMove {
+export interface ITabStackEditorMove {
+
+	/**
+	 * The editor that moved.
+	 */
 	readonly editor: EditorInput;
+
+	/**
+	 * The index of the editor before the move.
+	 */
 	readonly from: number;
+
+	/**
+	 * The index of the editor after the move.
+	 */
 	readonly to: number;
 }
 
 /**
  * What an explicit tab stack operation did to the editors of the group.
  */
-interface ITabStackOperationResult {
+export interface ITabStackOperationResult {
 
 	/**
 	 * The moves in the order they happened. Replaying them one after the
@@ -157,7 +172,11 @@ interface ITabStackOperationResult {
 	readonly pinned: readonly EditorInput[];
 }
 
-interface IAddEditorsToTabStackResult extends ITabStackOperationResult {
+/**
+ * What adding editors to a tab stack did to the editors of the group, and the
+ * tab stack they were added to.
+ */
+export interface IAddEditorsToTabStackResult extends ITabStackOperationResult {
 
 	/**
 	 * The tab stack the editors were added to.
@@ -1670,7 +1689,8 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 	 * least used preset color, and the editors are gathered right after the
 	 * first of them or, when it belongs to a tab stack, after the last editor of
 	 * that tab stack. With a tab stack, editors on its left move to its start and
-	 * editors on its right move to its end.
+	 * editors on its right move to its end. Selected editors that end up hidden
+	 * in a collapsed tab stack leave the selection.
 	 *
 	 * @returns the moves and pins that happened, and the resulting tab stack,
 	 * which is `undefined` when tab stacks are disabled, the tab stack does not
@@ -1718,6 +1738,8 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 			for (const editor of editors) {
 				this.setTabStack(editor, targetTabStack, pinned);
 			}
+
+			this.deselectHiddenEditors();
 
 			return { moves, pinned, tabStack: this.getTabStacksSnapshot().byId.get(targetTabStack) };
 		});
@@ -1935,7 +1957,8 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 	 * - otherwise belongs to no tab stack.
 	 *
 	 * A `targetTabStack` other than `undefined` is used instead when it keeps
-	 * every tab stack adjacent (see {@link moveEditorsWithinGroup}).
+	 * every tab stack adjacent (see {@link moveEditorsWithinGroup}). Selected
+	 * editors that end up hidden in a collapsed tab stack leave the selection.
 	 */
 	private assignTabStacksAfterMove(tabStacksBeforeMove: ReadonlyMap<EditorInput, TabStackId | undefined>, targetTabStack: TabStackId | null | undefined, pinned: EditorInput[]): void {
 		const assignments: [EditorInput, TabStackId | undefined][] = [];
@@ -1966,6 +1989,8 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 		for (const [editor, tabStack] of assignments) {
 			this.setTabStack(editor, tabStack, pinned);
 		}
+
+		this.deselectHiddenEditors();
 	}
 
 	private getTabStackForRun(runStart: number, run: readonly EditorInput[], tabStacksBeforeMove: ReadonlyMap<EditorInput, TabStackId | undefined>, targetTabStack: TabStackId | null | undefined): TabStackId | undefined {
@@ -2158,6 +2183,19 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 
 	private isHiddenInTabStack(editor: EditorInput): boolean {
 		return !!this.getTabStackState(editor)?.collapsed;
+	}
+
+	/**
+	 * Removes the editors hidden in a collapsed tab stack from the selection.
+	 * Only an editor that joined a collapsed tab stack without being active can
+	 * be hidden and selected.
+	 */
+	private deselectHiddenEditors(): void {
+		const inactiveSelectedEditors = this.selection.filter(editor => editor !== this.active);
+		const visibleSelectedEditors = inactiveSelectedEditors.filter(editor => !this.isHiddenInTabStack(editor));
+		if (visibleSelectedEditors.length !== inactiveSelectedEditors.length) {
+			this.doSetSelection(this.active, this.indexOf(this.active), visibleSelectedEditors);
+		}
 	}
 
 	/**

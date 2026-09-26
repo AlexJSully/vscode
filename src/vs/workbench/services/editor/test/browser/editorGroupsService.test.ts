@@ -5,7 +5,7 @@
 
 import assert from 'assert';
 import { workbenchInstantiationService, registerTestEditor, TestFileEditorInput, TestEditorPart, TestServiceAccessor, ITestInstantiationService, workbenchTeardown, createEditorParts, TestEditorParts } from '../../../../test/browser/workbenchTestServices.js';
-import { GroupDirection, GroupsOrder, MergeGroupMode, GroupOrientation, GroupLocation, isEditorGroup, IEditorGroupsService, GroupsArrangement, IEditorGroupContextKeyProvider, GroupActivationReason, IEditorGroupActivationEvent } from '../../common/editorGroupsService.js';
+import { GroupDirection, GroupsOrder, MergeGroupMode, GroupOrientation, GroupLocation, isEditorGroup, IEditorGroupsService, GroupsArrangement, IEditorGroupContextKeyProvider, GroupActivationReason, IEditorGroupActivationEvent, IEditorGroup } from '../../common/editorGroupsService.js';
 import { CloseDirection, IEditorPartOptions, EditorsOrder, EditorInputCapabilities, GroupModelChangeKind, SideBySideEditor, IEditorFactoryRegistry, EditorExtensions } from '../../../../common/editor.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
@@ -15,14 +15,18 @@ import { ConfirmResult } from '../../../../../platform/dialogs/common/dialogs.js
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { SideBySideEditorInput } from '../../../../common/editor/sideBySideEditorInput.js';
+import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { IGroupModelChangeEvent, IGroupEditorMoveEvent, IGroupEditorOpenEvent } from '../../../../common/editor/editorGroupModel.js';
 import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { IContextKeyService, RawContextKey } from '../../../../../platform/contextkey/common/contextkey.js';
-import { Emitter } from '../../../../../base/common/event.js';
-import { isEqual } from '../../../../../base/common/resources.js';
+import { Emitter, Event } from '../../../../../base/common/event.js';
+import { basename, isEqual } from '../../../../../base/common/resources.js';
 import { CloseAllEditorGroupsAction } from '../../../../browser/parts/editor/editorActions.js';
+import { ActiveEditorInTabStackContext, EditorGroupHasTabStacksContext } from '../../../../common/contextkeys.js';
+import { mock } from '../../../../../base/test/common/mock.js';
+import { IContextMenuMenuDelegate, IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 
 suite('EditorGroupsService', () => {
 
@@ -2386,6 +2390,396 @@ suite('EditorGroupsService', () => {
 		assert.strictEqual(activationEvents.length, 1);
 		assert.strictEqual(activationEvents[0].group, rootGroup);
 		assert.strictEqual(activationEvents[0].reason, GroupActivationReason.DEFAULT);
+	});
+
+	function createTabStacksInstantiationService(contextKeyService?: IContextKeyService): TestInstantiationService {
+		return workbenchInstantiationService({
+			configurationService: () => {
+				const configurationService = new TestConfigurationService({ workbench: { editor: { enableTabStacks: true } } });
+				disposables.add(configurationService.onDidChangeConfigurationEmitter);
+
+				return configurationService;
+			},
+			contextKeyService: contextKeyService ? () => contextKeyService : undefined
+		}, disposables);
+	}
+
+	function createNamedTestEditors(...names: string[]): TestFileEditorInput[] {
+		return names.map(name => createTestFileEditorInput(URI.file(name), TEST_EDITOR_INPUT_ID));
+	}
+
+	async function openPinnedTestEditors(group: IEditorGroup, ...names: string[]): Promise<TestFileEditorInput[]> {
+		const editors = createNamedTestEditors(...names);
+		for (const editor of editors) {
+			await group.openEditor(editor, { pinned: true });
+		}
+
+		return editors;
+	}
+
+	function editorName(editor: EditorInput | undefined): string {
+		return editor?.resource ? basename(editor.resource) : '';
+	}
+
+	/**
+	 * Describes the editors of a group in order, each as its name followed by a
+	 * letter per tab stack in order of appearance, `^` when that tab stack is
+	 * collapsed, `?` for the preview editor and `*` for the active editor.
+	 */
+	function tabStackState(group: IEditorGroup): string {
+		const letters = new Map(group.tabStacks.map((tabStack, index) => [tabStack.id, String.fromCharCode('a'.charCodeAt(0) + index)]));
+
+		return group.getEditors(EditorsOrder.SEQUENTIAL).map(editor => {
+			const tabStack = group.getTabStack(editor);
+
+			return [
+				editorName(editor),
+				tabStack ? letters.get(tabStack.id) : '',
+				tabStack?.collapsed ? '^' : '',
+				group.isPinned(editor) ? '' : '?',
+				group.isActive(editor) ? '*' : ''
+			].join('');
+		}).join(' ');
+	}
+
+	test('tab stacks - replaceEditors keeps the replacements in the tab stack of the replaced editors', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+
+		const [, first, middle, last] = await openPinnedTestEditors(group, '1', '2', '3', '4', '5');
+		group.addEditorsToTabStack([first, middle, last]);
+		await group.openEditor(middle);
+
+		const [firstReplacement, middleReplacement, lastReplacement] = createNamedTestEditors('6', '7', '8');
+		await group.replaceEditors([
+			{ editor: first, replacement: firstReplacement },
+			{ editor: middle, replacement: middleReplacement },
+			{ editor: last, replacement: lastReplacement }
+		]);
+
+		assert.deepStrictEqual(tabStackState(group), '1 6a 7a* 8a 5');
+	});
+
+	test('tab stacks - collapsing the tab stack of the active editor opens the nearest editor outside of it', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+
+		const [first, second, third] = await openPinnedTestEditors(group, '1', '2', '3', '4');
+		group.addEditorsToTabStack([second, third]);
+		await group.openEditor(second);
+		await group.setSelection(second, [first]);
+
+		const activeEditorChange = Event.toPromise(group.onDidActiveEditorChange);
+		group.updateTabStack(group.tabStacks[0].id, { collapsed: true });
+		await activeEditorChange;
+
+		assert.deepStrictEqual({
+			state: tabStackState(group),
+			selection: group.selectedEditors.map(editorName),
+			activeEditorPane: editorName(group.activeEditorPane?.input)
+		}, {
+			state: '1 2a^ 3a^ 4*',
+			selection: ['1', '4'],
+			activeEditorPane: '4'
+		});
+	});
+
+	test('tab stacks - collapsing the tab stack of the active editor of an inactive group keeps the other group active', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+
+		const [, second] = await openPinnedTestEditors(group, '1', '2', '3');
+		group.addEditorsToTabStack([second]);
+		await group.openEditor(second);
+		const otherGroup = part.addGroup(group, GroupDirection.RIGHT);
+		await openPinnedTestEditors(otherGroup, '4');
+		part.activateGroup(otherGroup);
+
+		const activeEditorChange = Event.toPromise(group.onDidActiveEditorChange);
+		group.updateTabStack(group.tabStacks[0].id, { collapsed: true });
+		await activeEditorChange;
+
+		assert.deepStrictEqual({
+			activeGroup: part.activeGroup.id,
+			state: tabStackState(group),
+			activeEditorPane: editorName(group.activeEditorPane?.input)
+		}, {
+			activeGroup: otherGroup.id,
+			state: '1 2a^ 3*',
+			activeEditorPane: '3'
+		});
+	});
+
+	test('tab stacks - collapsing does nothing when every editor of the group is in the tab stack', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+
+		const editors = await openPinnedTestEditors(group, '1', '2');
+		group.addEditorsToTabStack(editors);
+
+		group.updateTabStack(group.tabStacks[0].id, { collapsed: true });
+
+		assert.deepStrictEqual({
+			state: tabStackState(group),
+			activeEditorPane: editorName(group.activeEditorPane?.input)
+		}, {
+			state: '1a 2a*',
+			activeEditorPane: '2'
+		});
+	});
+
+	test('tab stacks - enforcing a single tab keeps tab stacks and their collapsed state', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+
+		const [first, second, third] = await openPinnedTestEditors(group, '1', '2', '3', '4');
+		group.addEditorsToTabStack([first, second]);
+		group.addEditorsToTabStack([third]);
+		group.updateTabStack(group.tabStacks[0].id, { collapsed: true });
+
+		const enforced = part.enforcePartOptions({ showTabs: 'single' });
+		const whileEnforced = tabStackState(group);
+		enforced.dispose();
+
+		assert.deepStrictEqual({ whileEnforced, afterwards: tabStackState(group) }, {
+			whileEnforced: '1a^ 2a^ 3b 4*',
+			afterwards: '1a^ 2a^ 3b 4*'
+		});
+	});
+
+	test('tab stacks - tab stack operations keep the tabs in the order of the editors', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+		const tabNames = () => Array.from(group.element.querySelectorAll('.tab')).map(tab => tab.getAttribute('data-resource-name')).join(' ');
+
+		const [first, , third, , fifth] = await openPinnedTestEditors(group, '1', '2', '3', '4', '5');
+		group.addEditorsToTabStack([first, third, fifth]);
+		const afterAdd = tabNames();
+		group.moveTabStack(group.tabStacks[0].id, 2);
+		const afterMove = tabNames();
+		group.removeEditorsFromTabStack([third]);
+		const afterRemove = tabNames();
+		group.moveEditorsWithinGroup([third], 0);
+
+		assert.deepStrictEqual({ afterAdd, afterMove, afterRemove, afterMoveWithinGroup: tabNames(), editors: tabStackState(group) }, {
+			afterAdd: '1 3 5 2 4',
+			afterMove: '2 4 1 3 5',
+			afterRemove: '2 4 1 5 3',
+			afterMoveWithinGroup: '3 2 4 1 5',
+			editors: '3 2 4 1a 5a*'
+		});
+	});
+
+	test('tab stacks - adding a preview editor to a tab stack shows it pinned in the tab bar', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+		const isTabItalic = () => !!group.element.querySelector('.tab[data-resource-name="2"] .italic');
+
+		const [pinnedEditor, previewEditor] = createNamedTestEditors('1', '2');
+		await group.openEditor(pinnedEditor, { pinned: true });
+		await group.openEditor(previewEditor);
+		const italicBefore = isTabItalic();
+
+		group.addEditorsToTabStack([previewEditor]);
+
+		assert.deepStrictEqual({ italicBefore, pinned: group.isPinned(previewEditor), italicAfter: isTabItalic() }, {
+			italicBefore: true,
+			pinned: true,
+			italicAfter: false
+		});
+	});
+
+	test('tab stacks - moveEditorsWithinGroup pins the moved editors', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+
+		await openPinnedTestEditors(group, '1', '2');
+		const [previewEditor] = createNamedTestEditors('3');
+		await group.openEditor(previewEditor);
+
+		group.moveEditorsWithinGroup([previewEditor], 0);
+
+		assert.deepStrictEqual(tabStackState(group), '3* 1 2');
+	});
+
+	test('tab stacks - openEditors from an editor in a tab stack opens the other editors in order after the tab stack', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+
+		const [, second, third] = await openPinnedTestEditors(group, '1', '2', '3', '4');
+		group.addEditorsToTabStack([second, third]);
+
+		await group.openEditors([second, ...createNamedTestEditors('5', '6')].map(editor => ({ editor })));
+
+		assert.deepStrictEqual(tabStackState(group), '1 2a* 3a 5 6 4');
+	});
+
+	test('tab stacks - mergeGroup at an index inside a tab stack moves the editors in order after the tab stack', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const targetGroup = part.activeGroup;
+
+		const [, second, third] = await openPinnedTestEditors(targetGroup, '1', '2', '3', '4');
+		targetGroup.addEditorsToTabStack([second, third]);
+		const sourceGroup = part.addGroup(targetGroup, GroupDirection.RIGHT);
+		await openPinnedTestEditors(sourceGroup, '5', '6');
+
+		part.mergeGroup(sourceGroup, targetGroup, { index: 2 });
+
+		assert.deepStrictEqual(tabStackState(targetGroup), '1 2a 3a 5 6* 4');
+	});
+
+	test('tab stacks - an editor moved to another group opens outside of tab stacks', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const sourceGroup = part.activeGroup;
+		const [sourceFirst, sourceSecond] = await openPinnedTestEditors(sourceGroup, 's1', 's2', 's3');
+		sourceGroup.addEditorsToTabStack([sourceFirst, sourceSecond]);
+		const targetGroup = part.addGroup(sourceGroup, GroupDirection.RIGHT);
+		const [targetFirst, targetSecond] = await openPinnedTestEditors(targetGroup, 't1', 't2', 't3');
+		targetGroup.addEditorsToTabStack([targetFirst, targetSecond]);
+
+		sourceGroup.moveEditor(sourceFirst, targetGroup, { index: 1 });
+
+		assert.deepStrictEqual({ source: tabStackState(sourceGroup), target: tabStackState(targetGroup) }, {
+			source: 's2a s3*',
+			target: 't1a t2a s1* t3'
+		});
+	});
+
+	test('tab stacks - an editor moved to another group with a tab stack hint joins that tab stack at the index', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const sourceGroup = part.activeGroup;
+		const [sourceFirst] = await openPinnedTestEditors(sourceGroup, 's1', 's2');
+		sourceGroup.addEditorsToTabStack([sourceFirst]);
+		const targetGroup = part.addGroup(sourceGroup, GroupDirection.RIGHT);
+		const [targetFirst, targetSecond] = await openPinnedTestEditors(targetGroup, 't1', 't2', 't3');
+		const targetTabStack = targetGroup.addEditorsToTabStack([targetFirst, targetSecond]);
+
+		sourceGroup.moveEditor(sourceFirst, targetGroup, { index: 1 }, { tabStack: targetTabStack?.id });
+
+		assert.deepStrictEqual({ source: tabStackState(sourceGroup), sourceTabStacks: sourceGroup.tabStacks.length, target: tabStackState(targetGroup) }, {
+			source: 's2*',
+			sourceTabStacks: 0,
+			target: 't1a s1a* t2a t3'
+		});
+	});
+
+	test('tab stacks - an editor copied to another group with a tab stack hint joins that tab stack at the index', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const sourceGroup = part.activeGroup;
+		const [sourceEditor] = await openPinnedTestEditors(sourceGroup, 's1');
+		const targetGroup = part.addGroup(sourceGroup, GroupDirection.RIGHT);
+		const targetEditors = await openPinnedTestEditors(targetGroup, 't1', 't2');
+		const targetTabStack = targetGroup.addEditorsToTabStack(targetEditors);
+
+		sourceGroup.copyEditor(sourceEditor, targetGroup, { index: 1 }, { tabStack: targetTabStack?.id });
+
+		assert.deepStrictEqual({ source: tabStackState(sourceGroup), target: tabStackState(targetGroup) }, {
+			source: 's1*',
+			target: 't1a s1a* t2a'
+		});
+	});
+
+	test('tab stacks - editors moved to another group one after the other with a tab stack hint join that tab stack as a run', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const sourceGroup = part.activeGroup;
+		const [sourceFirst, sourceSecond] = await openPinnedTestEditors(sourceGroup, 's1', 's2', 's3');
+		const targetGroup = part.addGroup(sourceGroup, GroupDirection.RIGHT);
+		const targetEditors = await openPinnedTestEditors(targetGroup, 't1', 't2');
+		const targetTabStack = targetGroup.addEditorsToTabStack(targetEditors);
+
+		sourceGroup.moveEditor(sourceFirst, targetGroup, { index: 1 }, { tabStack: targetTabStack?.id });
+		sourceGroup.moveEditor(sourceSecond, targetGroup, { index: 2 }, { tabStack: targetTabStack?.id });
+
+		assert.deepStrictEqual(tabStackState(targetGroup), 't1a s1a s2a* t2a');
+	});
+
+	test('tab stacks - copyGroup keeps tab stacks', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+
+		const [first, second, third] = await openPinnedTestEditors(group, '1', '2', '3', '4');
+		group.addEditorsToTabStack([first, second]);
+		group.addEditorsToTabStack([third]);
+		group.updateTabStack(group.tabStacks[0].id, { label: 'Auth', color: 'red', collapsed: true });
+
+		const copiedGroup = part.copyGroup(group, group, GroupDirection.RIGHT);
+
+		assert.deepStrictEqual({
+			state: tabStackState(copiedGroup),
+			tabStacks: copiedGroup.tabStacks.map(({ label, color }) => ({ label, color }))
+		}, {
+			state: '1a^ 2a^ 3b 4*',
+			tabStacks: [{ label: 'Auth', color: 'red' }, { label: '', color: 'purple' }]
+		});
+	});
+
+	test('tab stacks - closing the other editors also closes editors hidden in a collapsed tab stack', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+
+		const [first, second, third] = await openPinnedTestEditors(group, '1', '2', '3');
+		group.addEditorsToTabStack([first, second]);
+		group.updateTabStack(group.tabStacks[0].id, { collapsed: true });
+
+		await group.closeEditors({ except: third });
+
+		assert.deepStrictEqual(tabStackState(group), '3*');
+	});
+
+	test('tab stacks - the context menu of a tab tells whether that tab is in a tab stack', async () => {
+		const instantiationService = createTabStacksInstantiationService(new MockScopableContextKeyService());
+		const inTabStackValues: (boolean | undefined)[] = [];
+		// The context menu UI is the boundary: it renders the menu the tab asks for
+		instantiationService.stub(IContextMenuService, new class extends mock<IContextMenuService>() {
+			override showContextMenu(delegate: IContextMenuMenuDelegate): void {
+				inTabStackValues.push(delegate.contextKeyService?.getContextKeyValue<boolean>(ActiveEditorInTabStackContext.key));
+			}
+		});
+		const [part] = await createPart(instantiationService);
+		const group = part.activeGroup;
+
+		const [, second] = await openPinnedTestEditors(group, '1', '2');
+		group.addEditorsToTabStack([second]);
+
+		for (const name of ['2', '1']) {
+			group.element.querySelector(`.tab[data-resource-name="${name}"]`)?.dispatchEvent(new MouseEvent('contextmenu'));
+		}
+
+		assert.deepStrictEqual(inTabStackValues, [true, false]);
+	});
+
+	test('tab stacks - context keys follow the active editor and the tab stacks of the group', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService(new MockScopableContextKeyService()));
+		const group = part.activeGroup;
+		const contextKeys = (editorGroup: IEditorGroup) => ({
+			activeEditorIsInTabStack: editorGroup.scopedContextKeyService.getContextKeyValue(ActiveEditorInTabStackContext.key),
+			editorGroupHasTabStacks: editorGroup.scopedContextKeyService.getContextKeyValue(EditorGroupHasTabStacksContext.key)
+		});
+
+		const [first, second] = await openPinnedTestEditors(group, '1', '2');
+		const initially = contextKeys(group);
+
+		group.addEditorsToTabStack([second]);
+		const afterAddingActiveEditor = contextKeys(group);
+		const copiedGroup = contextKeys(part.copyGroup(group, group, GroupDirection.RIGHT));
+
+		await group.openEditor(first);
+		const afterOpeningEditorOutside = contextKeys(group);
+
+		await group.openEditor(second);
+		const afterOpeningEditorInside = contextKeys(group);
+
+		group.removeEditorsFromTabStack([second]);
+		const afterRemovingTabStack = contextKeys(group);
+
+		assert.deepStrictEqual({ initially, afterAddingActiveEditor, copiedGroup, afterOpeningEditorOutside, afterOpeningEditorInside, afterRemovingTabStack }, {
+			initially: { activeEditorIsInTabStack: false, editorGroupHasTabStacks: false },
+			afterAddingActiveEditor: { activeEditorIsInTabStack: true, editorGroupHasTabStacks: true },
+			copiedGroup: { activeEditorIsInTabStack: true, editorGroupHasTabStacks: true },
+			afterOpeningEditorOutside: { activeEditorIsInTabStack: false, editorGroupHasTabStacks: true },
+			afterOpeningEditorInside: { activeEditorIsInTabStack: true, editorGroupHasTabStacks: true },
+			afterRemovingTabStack: { activeEditorIsInTabStack: false, editorGroupHasTabStacks: false }
+		});
 	});
 
 	ensureNoDisposablesAreLeakedInTestSuite();

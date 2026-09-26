@@ -126,7 +126,7 @@ import { TextEditorPaneSelection } from '../../browser/parts/editor/textEditor.j
 import { TextResourceEditor } from '../../browser/parts/editor/textResourceEditor.js';
 import { IPaneCompositePart } from '../../browser/parts/paneCompositePart.js';
 import { EditorExtensions, EditorInputCapabilities, EditorInputWithOptions, EditorPaneSelectionChangeReason, EditorsOrder, EditorExtensions as Extensions, GroupIdentifier, IActiveEditorChangeEvent, IEditorCloseEvent, IEditorFactoryRegistry, IEditorIdentifier, IEditorOpenContext, IEditorPane, IEditorPaneSelection, IEditorPartOptions, IEditorSerializer, IEditorWillMoveEvent, IEditorWillOpenEvent, IFileEditorInput, IMoveResult, IResourceDiffEditorInput, IRevertOptions, ISaveOptions, ITextDiffEditorPane, IToolbarActions, IUntitledTextResourceEditorInput, IUntypedEditorInput, IVisibleEditorPane } from '../../common/editor.js';
-import { IGroupModelChangeEvent } from '../../common/editor/editorGroupModel.js';
+import { IGroupModelChangeEvent, ITabStack, ITabStackUpdate, TabStackId } from '../../common/editor/editorGroupModel.js';
 import { EditorInput } from '../../common/editor/editorInput.js';
 import { SideBySideEditorInput } from '../../common/editor/sideBySideEditorInput.js';
 import { TextResourceEditorInput } from '../../common/editor/textResourceEditorInput.js';
@@ -1011,6 +1011,13 @@ export class TestEditorGroupView implements IEditorGroupView {
 	pinEditor(_editor?: EditorInput): void { }
 	stickEditor(editor?: EditorInput | undefined): void { }
 	unstickEditor(editor?: EditorInput | undefined): void { }
+	readonly tabStacks: readonly ITabStack[] = [];
+	getTabStack(_editor: EditorInput): ITabStack | undefined { return undefined; }
+	addEditorsToTabStack(_editors: readonly EditorInput[], _tabStack?: TabStackId): ITabStack | undefined { return undefined; }
+	removeEditorsFromTabStack(_editors: readonly EditorInput[]): void { }
+	updateTabStack(_tabStack: TabStackId, _update: ITabStackUpdate): void { }
+	moveTabStack(_tabStack: TabStackId, _index: number): void { }
+	moveEditorsWithinGroup(_editors: readonly EditorInput[], _index: number, _targetTabStack?: TabStackId | null): void { }
 	lock(locked: boolean): void { }
 	focus(): void { }
 	get scopedContextKeyService(): IContextKeyService { throw new Error('not implemented'); }

@@ -26,7 +26,7 @@ import { EditorPane } from './editorPane.js';
 import { CONNECTED_EDITOR_TABS_SELECTOR, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView, IInternalEditorOpenOptions } from './editor.js';
 import { IEditorCommandsContext, EditorResourceAccessor, IEditorPartOptions, SideBySideEditor, EditorsOrder, EditorInputCapabilities, IToolbarActions, GroupIdentifier, Verbosity } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
-import { ResourceContextKey, ActiveEditorPinnedContext, ActiveEditorStickyContext, ActiveEditorDirtyContext, ActiveEditorGroupLockedContext, ActiveEditorCanSplitInGroupContext, SideBySideEditorActiveContext, ActiveEditorFirstInGroupContext, ActiveEditorAvailableEditorIdsContext, applyAvailableEditorIds, ActiveEditorLastInGroupContext, ActiveEditorCannotCloseContext } from '../../../common/contextkeys.js';
+import { ResourceContextKey, ActiveEditorPinnedContext, ActiveEditorStickyContext, ActiveEditorDirtyContext, ActiveEditorGroupLockedContext, ActiveEditorCanSplitInGroupContext, SideBySideEditorActiveContext, ActiveEditorFirstInGroupContext, ActiveEditorAvailableEditorIdsContext, applyAvailableEditorIds, ActiveEditorLastInGroupContext, ActiveEditorCannotCloseContext, ActiveEditorInTabStackContext } from '../../../common/contextkeys.js';
 import { AnchorAlignment } from '../../../../base/browser/ui/contextview/contextview.js';
 import { assertReturnsDefined } from '../../../../base/common/types.js';
 import { isFirefox } from '../../../../base/browser/browser.js';
@@ -90,6 +90,13 @@ export interface IEditorTabsControl extends IDisposable {
 	unstickEditor(editor: EditorInput): void;
 	setActive(isActive: boolean): void;
 	updateEditorSelections(): void;
+
+	/**
+	 * Shows the tab stacks of the group as they are, after tab stacks were
+	 * created, deleted or changed, or editors joined, left or moved within them.
+	 */
+	updateTabStacks(): void;
+
 	updateEditorLabel(editor: EditorInput): void;
 	updateEditorCapabilities(editor: EditorInput): void;
 	updateEditorDirty(editor: EditorInput): void;
@@ -136,6 +143,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 	private editorDirtyContext: IContextKey<boolean>;
 	private editorAvailableEditorIds: IContextKey<string>;
 	private editorCannotCloseContext: IContextKey<boolean>;
+	private editorInTabStackContext: IContextKey<boolean>;
 
 	private editorCanSplitInGroupContext: IContextKey<boolean>;
 	private sideBySideEditorContext: IContextKey<boolean>;
@@ -185,6 +193,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 		this.editorDirtyContext = ActiveEditorDirtyContext.bindTo(this.contextMenuContextKeyService);
 		this.editorAvailableEditorIds = ActiveEditorAvailableEditorIdsContext.bindTo(this.contextMenuContextKeyService);
 		this.editorCannotCloseContext = ActiveEditorCannotCloseContext.bindTo(this.contextMenuContextKeyService);
+		this.editorInTabStackContext = ActiveEditorInTabStackContext.bindTo(this.contextMenuContextKeyService);
 
 		this.editorCanSplitInGroupContext = ActiveEditorCanSplitInGroupContext.bindTo(this.contextMenuContextKeyService);
 		this.sideBySideEditorContext = SideBySideEditorActiveContext.bindTo(this.contextMenuContextKeyService);
@@ -588,6 +597,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 		this.editorStickyContext.set(this.tabsModel.isSticky(editor));
 		this.editorDirtyContext.set(editor.isDirty() && !editor.isSaving());
 		this.editorCannotCloseContext.set(editor.hasCapability(EditorInputCapabilities.CannotClose));
+		this.editorInTabStackContext.set(!!this.tabsModel.getTabStack(editor));
 		this.groupLockedContext.set(this.tabsModel.isLocked);
 		this.editorCanSplitInGroupContext.set(editor.hasCapability(EditorInputCapabilities.CanSplitInGroup));
 		this.sideBySideEditorContext.set(editor.typeId === SideBySideEditorInput.ID);
@@ -710,6 +720,8 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 	abstract setActive(isActive: boolean): void;
 
 	abstract updateEditorSelections(): void;
+
+	abstract updateTabStacks(): void;
 
 	abstract updateEditorLabel(editor: EditorInput): void;
 

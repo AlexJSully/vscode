@@ -1302,6 +1302,8 @@ interface IEditorPartConfiguration {
 	tabSizingFixedMaxWidth?: number;
 	pinnedTabSizing?: 'normal' | 'compact' | 'shrink';
 	pinnedTabsOnSeparateRow?: boolean;
+	/** The `workbench.editor.enableTabStacks` setting; `isTabStacksEnabled` also requires `showTabs` to be `multiple`. */
+	enableTabStacks?: boolean;
 	tabHeight?: 'default' | 'compact';
 	preventPinnedEditorClose?: PreventPinnedEditorClose;
 	titleScrollbarSizing?: 'default' | 'large';

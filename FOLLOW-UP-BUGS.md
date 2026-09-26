@@ -8,10 +8,11 @@ These are existing bugs found while building Tab Stacks (Chrome-style tab groupi
   - `Needs repro test`: probably a real defect, but its impact is unproven until a failing test exists.
   - `Confirmed by test`, `PR open`, `Fixed`.
 - **Workflow:** write the failing test first, in the suite named in the entry. Then fix, then update the status here.
-- **Adding entries:** whenever work on Tab Stacks finds another bug that is out of scope, add it here instead of fixing it in place.
+- **What goes here:** a bug found while building Tab Stacks is fixed immediately, with a test, when either Tab Stacks introduced it (it does not exist on `main`) or it blocks Tab Stacks from working. A bug that already exists on `main` and does not block Tab Stacks is added here and deferred.
+- **Blocking review (2026-09-26):** FB-1 to FB-10 all exist on `main`, and none of them blocks Tab Stacks, so all are deferred.
 - **Scope:** this file is for the fork and does not belong in the upstream Tab Stacks pull request.
 
-**Suggested PR order** (smallest and safest first): FB-3, FB-5, FB-6, FB-1, FB-2, FB-4.
+**Suggested PR order** (smallest and safest first): FB-3, FB-10, FB-5, FB-6, FB-7, FB-8, FB-1, FB-2, FB-4, FB-9.
 
 An upstream search on 2026-09-25 (`gh search issues`) found no existing microsoft/vscode issue for any of them.
 
@@ -25,6 +26,10 @@ An upstream search on 2026-09-25 (`gh search issues`) found no existing microsof
 | [FB-4](#fb-4-unsticky-row-tabs-may-be-announced-as-pinned) | Unsticky-row tabs may be announced as "pinned" | Needs repro test |
 | [FB-5](#fb-5-an-out-of-range-move-index-reaches-the-tab-bar) | An out-of-range move index reaches the tab bar | Confirmed by reading; impact needs a test |
 | [FB-6](#fb-6-the-transient-event-fires-with-an-index-the-editor-does-not-occupy) | The transient event (`EDITOR_TRANSIENT`) fires with an index the editor does not occupy | Confirmed by reading |
+| [FB-7](#fb-7-moving-a-multi-selection-by-keyboard-can-scramble-its-order) | Moving a multi-selection by keyboard can scramble its order | Confirmed by reading |
+| [FB-8](#fb-8-closing-the-active-editor-drops-the-other-selected-editors) | Closing the active editor drops the other selected editors | Confirmed by reading; impact needs a test |
+| [FB-9](#fb-9-stylelint-known-variables-are-out-of-date) | Stylelint known variables are out of date with the registered colors | Confirmed by test |
+| [FB-10](#fb-10-a-command-context-test-asserts-the-wrong-result) | A command-context test asserts the wrong result | Confirmed by reading |
 
 ## FB-1: restored MRU and preview point at the wrong editors
 
@@ -98,3 +103,55 @@ An upstream search on 2026-09-25 (`gh search issues`) found no existing microsof
 - **Confirming test** (suite `EditorGroupModel`): open a preview editor, then open a transient preview editor to its right, so that it replaces the first one. Assert that the `EDITOR_TRANSIENT` event's `editorIndex` equals the `EDITOR_OPEN` event's `editorIndex`.
 - **Suggested fix:** move the "Handle transient" block after the preview-replacement block, so that it uses the final index.
 - **PR grouping:** alone.
+
+## FB-7: moving a multi-selection by keyboard can scramble its order
+
+- **Area:** `moveTabs` and `moveTab` in `src/vs/workbench/browser/parts/editor/editorCommands.ts` (lines 248-288 at `e5f3c4cdf79`), behind the "Move Editor Left/Right/First/Last/Center/Position" commands when several tabs are selected.
+- **Evidence:** `moveTabs` reverses the selection for `first` and `right`, then moves each editor on its own. `moveTab` computes each target index and clamps it into `[0, count - 1]`.
+  - When the last selected editor is already at the end, the clamp leaves it in place, and the next one is moved *after* it. Example: in `[A, B, C]` with B and C selected, "Move Editor Right" gives `[A, C, B]`.
+  - `center` sends every selected editor to the same index, and so does a `position` target inside the selection. The editors then land in reverse order.
+- **Impact:** the selected tabs swap places instead of moving together.
+- **How found:** by reading the code, while implementing Tab Stacks slice B. Tab Stacks moves the selection as one run only when the group has tab stacks, so this path is still used everywhere else.
+- **Confirming test:** `moveTabs` is only reachable through registered commands. Extract its index computation into a pure function (Tab Stacks slice B adds `getMoveTabIndex`/`getMoveTabsRunIndex` in `browser/parts/editor/editor.ts`), then snapshot the resulting orders for `right` at the end, `center` and `position` in the suite `Workbench editor utils`.
+- **Suggested fix:** move the selection as one contiguous run, computing one target index for the run instead of one index per editor.
+- **PR grouping:** alone.
+
+## FB-8: closing the active editor drops the other selected editors
+
+- **Area:**
+  - `EditorGroupView.doCloseActiveEditor` (`src/vs/workbench/browser/parts/editor/editorGroupView.ts:1606-1680` at `e5f3c4cdf79`);
+  - `EditorGroupModel.doCloseEditor` (`src/vs/workbench/common/editor/editorGroupModel.ts`, around 554-555).
+- **Evidence:**
+  - When the active editor closes, the model deliberately keeps the other selected editors: `const newInactiveSelectedEditors = this.selection.filter(...)` followed by `this.doSetSelection(newActive, ..., newInactiveSelectedEditors)`.
+  - The view then opens the next editor with `this.doOpenEditor(nextActiveEditor, options, ...)`, where `options` has no `inactiveSelection`.
+  - `openEditor` ends in `setSelection(..., options?.inactiveSelection ?? [])`, which clears them again.
+- **Impact:** after closing the active tab of a multi-selection, the rest of the selection is lost.
+- **How found:** by reading the code, while implementing Tab Stacks slice B.
+- **Confirming test** (suite `EditorGroupsService`): select 3 editors, close the active one, and assert `group.selectedEditors`.
+- **Suggested fix:** pass the model's remaining inactive selection as `inactiveSelection` when `doCloseActiveEditor` opens the next editor.
+- **PR grouping:** alone. First check that dropping the selection is not intentional.
+
+## FB-9: stylelint known variables are out of date
+
+- **Area:** `build/lib/stylelint/vscode-known-variables.json`.
+- **Evidence:** the color registry release test (`env -u ELECTRON_RUN_AS_NODE ./scripts/test.sh --runGlob "**/colorRegistry.releaseTest.js"`) fails. Its regenerated list differs by about 122 lines:
+  - 4 colors to add (`modernActivityBar`, `testing`);
+  - 15 colors to remove (such as `gauge`, `gitDecoration`, `agentsMobileDiff`);
+  - 7 sizes.
+
+  None of them is a tab stack color. The 9 `tabStack.*` colors are listed and pass.
+- **Impact:** stylelint may accept stale `--vscode-*` variables or reject valid new ones. The release test is not part of PR CI, so the drift goes unnoticed until the endgame.
+- **How found:** by running the test during Tab Stacks slice B. The test rewrites the JSON when it fails; the rewrite was reverted.
+- **Confirming test:** the release test itself.
+- **Suggested fix:** run the test on `main` to regenerate the file, then review the additions and removals.
+- **PR grouping:** alone. Coordinate with whoever owns the theme colors listed.
+
+## FB-10: a command-context test asserts the wrong result
+
+- **Area:** test `inactive edior group command context` in `src/vs/workbench/test/browser/parts/editor/editorCommandsContext.test.ts` (starts at line 148 at `e5f3c4cdf79`).
+- **Evidence:** the second block builds `resolvedContext2`, but line 183 asserts `assert.strictEqual(resolvedContext1.groupedEditors[0].editors[0], input21);`, which is a copy of line 173. The resolved editor of the second context is therefore never checked. The test title also misspells "editor".
+- **Impact:** a regression in how the second context resolves its editor would not be caught.
+- **How found:** by reading the code, while implementing Tab Stacks slice B.
+- **Confirming test:** change line 183 to assert `resolvedContext2`, which should still pass.
+- **Suggested fix:** as above, and fix the title typo.
+- **PR grouping:** alone (trivial).

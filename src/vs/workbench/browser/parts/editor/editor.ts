@@ -5,6 +5,7 @@
 
 import { GroupIdentifier, IWorkbenchEditorConfiguration, IEditorIdentifier, IEditorCloseEvent, IEditorPartOptions, IEditorPartOptionsChangeEvent, SideBySideEditor, EditorCloseContext, IEditorPane, IEditorPartLimitOptions, IEditorPartDecorationOptions, IEditorWillOpenEvent, EditorInputWithOptions } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
+import { TabStackId } from '../../../common/editor/editorGroupModel.js';
 import { MenuId } from '../../../../platform/actions/common/actions.js';
 import { IEditorGroup, GroupDirection, IMergeGroupOptions, GroupsOrder, GroupsArrangement, IAuxiliaryEditorPart, IEditorPart, IModalEditorPart, GroupActivationReason } from '../../../services/editor/common/editorGroupsService.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
@@ -32,6 +33,12 @@ export const DEFAULT_EDITOR_MAX_DIMENSIONS = new Dimension(Number.POSITIVE_INFIN
 export const CONNECTED_EDITOR_TABS_CLASS = 'modern-ui-connected-editor-tabs';
 export const CONNECTED_EDITOR_TABS_SELECTOR = `.${CONNECTED_EDITOR_TABS_CLASS}`;
 
+/**
+ * The context menu of a tab stack header in the tab bar. Its commands receive
+ * the group and the index of the first editor of the tab stack as context.
+ */
+export const EditorTabStackContextMenuId = new MenuId('EditorTabStackContext');
+
 export const DEFAULT_EDITOR_PART_OPTIONS: IEditorPartOptions = {
 	showTabs: 'multiple',
 	highlightModifiedTabs: false,
@@ -46,6 +53,7 @@ export const DEFAULT_EDITOR_PART_OPTIONS: IEditorPartOptions = {
 	tabSizingFixedMaxWidth: 160,
 	pinnedTabSizing: 'normal',
 	pinnedTabsOnSeparateRow: false,
+	enableTabStacks: false,
 	tabHeight: 'default',
 	preventPinnedEditorClose: 'keyboardAndMouse',
 	titleScrollbarSizing: 'default',
@@ -137,6 +145,7 @@ function validateEditorPartOptions(options: IEditorPartOptions): IEditorPartOpti
 		'showTabIndex': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.showTabIndex),
 		'alwaysShowEditorActions': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.alwaysShowEditorActions),
 		'pinnedTabsOnSeparateRow': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.pinnedTabsOnSeparateRow),
+		'enableTabStacks': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.enableTabStacks),
 		'focusRecentEditorAfterClose': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.focusRecentEditorAfterClose),
 		'showIcons': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.showIcons),
 		'enablePreview': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.enablePreview),
@@ -185,6 +194,14 @@ function validateEditorPartOptions(options: IEditorPartOptions): IEditorPartOpti
 			'colors': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.decorations.colors)
 		}),
 	}, options);
+}
+
+/**
+ * Returns whether editors can be gathered into tab stacks, which needs the
+ * setting and a tab bar that shows multiple tabs.
+ */
+export function isTabStacksEnabled(options: IEditorPartOptions): boolean {
+	return options.enableTabStacks && options.showTabs === 'multiple';
 }
 
 /**
@@ -330,7 +347,118 @@ export interface IEditorGroupView extends IDisposable, ISerializableView, IEdito
 
 	openEditor(editor: EditorInput, options?: IEditorOptions, internalOptions?: IInternalEditorOpenOptions): Promise<IEditorPane | undefined>;
 
+	/**
+	 * Moves an editor within this group or to another group, like
+	 * {@link IEditorGroup.moveEditor}, with internal options for the target.
+	 */
+	moveEditor(editor: EditorInput, target: IEditorGroup, options?: IEditorOptions, internalOptions?: IInternalMoveCopyOptions): boolean;
+
+	/**
+	 * Copies an editor to another group, like {@link IEditorGroup.copyEditor},
+	 * with internal options for the target.
+	 */
+	copyEditor(editor: EditorInput, target: IEditorGroup, options?: IEditorOptions, internalOptions?: IInternalEditorOpenOptions): void;
+
+	/**
+	 * Moves all editors of a tab stack. The index is where the first editor of
+	 * the tab stack is after the move. It is kept after the sticky editors, and
+	 * an index inside another tab stack moves to the edge of that tab stack.
+	 */
+	moveTabStack(tabStack: TabStackId, index: number): void;
+
+	/**
+	 * Moves editors of the group next to each other, keeping their order, and
+	 * pins the editors that move. The index is where the first of them is after
+	 * the move. The editors must neither be sticky nor land among the sticky
+	 * editors, because the tab bar is not updated for a change of sticky state.
+	 * The tab stack of the moved editors is decided after the move:
+	 * - `undefined` keeps, joins or leaves a tab stack depending on where the
+	 * editors land, the same as moving a single editor does;
+	 * - `null` puts the editors outside of any tab stack;
+	 * - a tab stack puts the editors in that tab stack.
+	 *
+	 * `null` and a tab stack are only honored when every tab stack stays
+	 * adjacent and, for a tab stack, when the editors end up next to it or are
+	 * all its editors.
+	 */
+	moveEditorsWithinGroup(editors: readonly EditorInput[], index: number, targetTabStack?: TabStackId | null): void;
+
 	relayout(): void;
+}
+
+/**
+ * Returns `index`, or the index right after the tab stack of the group that
+ * `index` falls strictly inside of. A new editor opened without a tab stack
+ * hint never opens inside a tab stack, so editors opened one after the other
+ * at consecutive indices from inside a tab stack would otherwise each move
+ * past it and end up reversed.
+ */
+export function getIndexPastTabStack(group: IEditorGroup, index: number): number {
+	const editorBefore = index > 0 ? group.getEditorByIndex(index - 1) : undefined;
+	const editorAfter = group.getEditorByIndex(index);
+	const tabStack = editorBefore ? group.getTabStack(editorBefore) : undefined;
+	if (!tabStack || !editorAfter || group.getTabStack(editorAfter)?.id !== tabStack.id) {
+		return index;
+	}
+
+	return group.getIndexOfEditor(tabStack.editors[tabStack.editors.length - 1]) + 1;
+}
+
+/**
+ * Returns the index that the commands moving editors by tab move an editor at
+ * `index` to, in a group of `count` editors.
+ *
+ * @param args where to move: `to` names the target, and `value` is the number
+ * of tabs for `left` and `right` and the 1-based position for `position`.
+ */
+export function getMoveTabIndex(args: { readonly to?: string; readonly value?: number }, index: number, count: number): number {
+	switch (args.to) {
+		case 'first':
+			index = 0;
+			break;
+		case 'last':
+			index = count - 1;
+			break;
+		case 'left':
+			index = index - (args.value ?? 1);
+			break;
+		case 'right':
+			index = index + (args.value ?? 1);
+			break;
+		case 'center':
+			index = Math.round(count / 2) - 1;
+			break;
+		case 'position':
+			index = (args.value ?? 1) - 1;
+			break;
+	}
+
+	return index < 0 ? 0 : index >= count ? count - 1 : index;
+}
+
+/**
+ * Returns the lowest index that editors of the group occupy after they move
+ * one after the other in the given order, each to the index that
+ * {@link getMoveTabIndex} returns for it at that time. Returns `undefined`
+ * when the editors are not adjacent, or when they are or would become sticky.
+ */
+export function getMoveTabsRunIndex(args: { readonly to?: string; readonly value?: number }, group: IEditorGroup, editors: readonly EditorInput[]): number | undefined {
+	const indices = editors.map(editor => group.getIndexOfEditor(editor));
+	const firstIndex = Math.min(...indices);
+	if (firstIndex < group.stickyCount || Math.max(...indices) - firstIndex !== editors.length - 1) {
+		return undefined;
+	}
+
+	const order = [...group.editors];
+	for (const editor of editors) {
+		const index = order.indexOf(editor);
+		order.splice(index, 1);
+		order.splice(getMoveTabIndex(args, index, group.count), 0, editor);
+	}
+
+	const runIndex = order.findIndex(editor => editors.includes(editor));
+
+	return runIndex >= group.stickyCount ? runIndex : undefined;
 }
 
 export function fillActiveEditorViewState(group: IEditorGroup, expectedActiveEditor?: EditorInput, presetOptions?: IEditorOptions): IEditorOptions {
@@ -442,6 +570,13 @@ export interface IInternalEditorOpenOptions extends IInternalEditorTitleControlO
 	 * Inactive editors to select after opening the active selected editor.
 	 */
 	readonly inactiveSelection?: EditorInput[];
+
+	/**
+	 * The tab stack a new editor joins when an editor of that tab stack is next
+	 * to the index it opens at. Used when an editor replaces a member of a tab
+	 * stack and when a tab from another group is dropped into a tab stack.
+	 */
+	readonly tabStack?: TabStackId;
 }
 
 export interface IInternalEditorCloseOptions extends IInternalEditorTitleControlOptions {

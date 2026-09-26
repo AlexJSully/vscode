@@ -78,6 +78,8 @@ export class NoEditorTabsControl extends EditorTabsControl {
 
 	updateEditorSelections(): void { }
 
+	updateTabStacks(): void { }
+
 	updateEditorLabel(editor: EditorInput): void { }
 
 	updateEditorCapabilities(editor: EditorInput): void { }

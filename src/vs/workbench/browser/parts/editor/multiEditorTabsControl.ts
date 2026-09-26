@@ -853,6 +853,8 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		this.invalidateConnectedTabLayout();
 	}
 
+	updateTabStacks(): void { }
+
 	private invalidateConnectedTabLayout(): void {
 		if (this.connectedTabBounds || this.parent.closest(CONNECTED_EDITOR_TABS_SELECTOR)) {
 			this.clearConnectedTabClipping();
