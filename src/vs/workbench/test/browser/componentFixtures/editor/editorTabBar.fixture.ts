@@ -13,13 +13,16 @@ import { basename, dirname } from '../../../../../base/common/resources.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { ThemeIcon } from '../../../../../base/common/themables.js';
 import { Codicon } from '../../../../../base/common/codicons.js';
-import { mock } from '../../../../../base/test/common/mock.js';
+import { mock, upcastPartial } from '../../../../../base/test/common/mock.js';
 import { localize } from '../../../../../nls.js';
 import { IMenuService, MenuId } from '../../../../../platform/actions/common/actions.js';
 import { MenuService } from '../../../../../platform/actions/common/menuService.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IContextKeyService } from '../../../../../platform/contextkey/common/contextkey.js';
 import { ContextKeyService } from '../../../../../platform/contextkey/browser/contextKeyService.js';
+import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
+import { ContextViewService } from '../../../../../platform/contextview/browser/contextViewService.js';
+import { ILayoutService } from '../../../../../platform/layout/browser/layoutService.js';
 import { listErrorForeground, listWarningForeground } from '../../../../../platform/theme/common/colors/listColors.js';
 import { isDark } from '../../../../../platform/theme/common/theme.js';
 import { asCssVariableName } from '../../../../../platform/theme/common/colorUtils.js';
@@ -344,6 +347,25 @@ function unnamedTabStacksEditorSpecs(): IEditorSpec[] {
 	];
 }
 
+/**
+ * A tab stack of three editors, the middle one modified, between two editors
+ * outside any tab stack, and a tab stack of one editor with a custom color,
+ * with the editor at `activeIndex` active.
+ */
+function activeTabStackMemberEditorSpecs(activeIndex: number): IEditorSpec[] {
+	const auth: ITabStackSpec = { label: 'Auth', color: 'pink' };
+	const docs: ITabStackSpec = { label: 'Docs', color: '#0d9488' };
+	const specs: IEditorSpec[] = [
+		{ resource: file('/project/src/app/main.ts') },
+		{ resource: file('/project/src/auth/login.ts'), tabStack: auth },
+		{ resource: file('/project/src/auth/session.ts'), tabStack: auth, dirty: true },
+		{ resource: file('/project/src/auth/token.ts'), tabStack: auth },
+		{ resource: file('/project/package.json'), icon: ThemeIcon.fromId(Codicon.json.id) },
+		{ resource: file('/project/README.md'), icon: ThemeIcon.fromId(Codicon.markdown.id), tabStack: docs },
+	];
+	return specs.map((spec, index) => ({ ...spec, active: index === activeIndex }));
+}
+
 function cannotCloseStickyEditorSpecs(): IEditorSpec[] {
 	return [
 		{ resource: file('/project/Changes'), capabilities: EditorInputCapabilities.CannotClose, pinned: true, sticky: true, active: true },
@@ -433,6 +455,8 @@ export interface IEditorTabBarFixtureOptions {
 	readonly focusedTabAction?: number;
 	readonly editorContents?: string;
 	readonly activeTabClipping?: 'left' | 'right' | 'left-shoulder' | 'right-shoulder';
+	/** Index of the tab stack whose editor is open under its header. */
+	readonly editTabStack?: number;
 }
 
 function createPartOptions(overrides?: Partial<IEditorPartOptions>): IEditorPartOptions {
@@ -526,6 +550,17 @@ export function renderEditorTabBarFixture(ctx: ComponentFixtureContext, options:
 		instantiationService.stub(IMenuService, disposableStore.add(instantiationService.createInstance(MenuService)));
 	}
 
+	if (options.editTabStack !== undefined) {
+		// Show the editor of a tab stack inside the fixture, where the theme applies, rather than in the document body
+		instantiationService.stub(ILayoutService, upcastPartial<ILayoutService>({
+			getContainer: () => container,
+			mainContainer: container,
+			activeContainer: container,
+			onDidLayoutContainer: Event.None,
+		}));
+		instantiationService.stub(IContextViewService, disposableStore.add(instantiationService.createInstance(ContextViewService)));
+	}
+
 	if (options.breadcrumbs) {
 		instantiationService.stub(IBreadcrumbsService, new BreadcrumbsService());
 		instantiationService.stub(IOutlineService, new class extends mock<IOutlineService>() { }());
@@ -566,6 +601,7 @@ export function renderEditorTabBarFixture(ctx: ComponentFixtureContext, options:
 		override isSelected(editorOrIndex: EditorInput | number) { return model.isSelected(editorOrIndex); }
 		// An editor group view needs a whole editor part, so these forward to the model and redraw the tabs
 		override get tabStacks() { return model.tabStacks; }
+		override get onDidModelChange() { return model.onDidModelChange; }
 		override getTabStack(editor: EditorInput) { return model.getTabStack(editor); }
 		override updateTabStack(tabStack: TabStackId, update: ITabStackUpdate) {
 			model.updateTabStack(tabStack, update);
@@ -613,7 +649,7 @@ export function renderEditorTabBarFixture(ctx: ComponentFixtureContext, options:
 	}
 
 	const editorContainer = $('.editor-container');
-	editorContainer.style.height = '96px';
+	editorContainer.style.height = options.editTabStack !== undefined ? '200px' : '96px'; // room for the editor of a tab stack
 	editorContainer.style.backgroundColor = 'var(--vscode-editor-background)';
 
 	editorPart.appendChild(content);
@@ -683,6 +719,14 @@ export function renderEditorTabBarFixture(ctx: ComponentFixtureContext, options:
 		}
 	}
 	layout();
+	const editTabStack = options.editTabStack;
+	if (editTabStack !== undefined) {
+		disposableStore.add(scheduleAtNextAnimationFrame(getWindow(container), () => {
+			if (!titleControl.editTabStack(model.tabStacks[editTabStack].id)) {
+				throw new Error(`The editor of tab stack ${editTabStack} did not open`);
+			}
+		}));
+	}
 	if (options.activeTabClipping) {
 		disposableStore.add(scheduleAtNextAnimationFrame(getWindow(container), () => {
 			const tabsContainer = titleContainer.querySelector<HTMLElement>('.tabs-container');
@@ -851,8 +895,23 @@ function createFixtures(modernUI: boolean, additionalThemes: readonly ComponentF
 		// Unnamed tab stacks show only their color.
 		TabStacksUnnamed: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: unnamedTabStacksEditorSpecs() }), additionalThemes }),
 
-		// The active editor is the first tab of a tab stack, right after its header.
+		// The active editor is the first tab of a tab stack, right after its header, and carries the color of its tab stack.
 		TabStacksConnectedActiveMember: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: tabStacksEditorSpecs(true), width: 1000 }), additionalThemes }),
+
+		// The active editor is the modified middle tab of a tab stack, whose line runs around it.
+		TabStacksActiveMiddleMember: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: activeTabStackMemberEditorSpecs(2) }), additionalThemes }),
+
+		// The active editor is the last tab of a tab stack in an editor group without focus.
+		TabStacksActiveLastMemberInactiveGroup: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: activeTabStackMemberEditorSpecs(3), active: false }), additionalThemes }),
+
+		// The active editor is the only tab of a tab stack with a custom color.
+		TabStacksActiveOnlyMember: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: activeTabStackMemberEditorSpecs(5) }), additionalThemes }),
+
+		// The editor of a tab stack under its header, with the name and the colors of the tab stack.
+		TabStackEditor: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: tabStacksEditorSpecs(), width: 1000, editTabStack: 0 }), additionalThemes }),
+
+		// The editor of an unnamed tab stack with a custom color, which is listed after the preset colors.
+		TabStackEditorUnnamedCustomColor: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: unnamedTabStacksEditorSpecs(), editTabStack: 2 }), additionalThemes }),
 	};
 }
 
@@ -951,6 +1010,11 @@ export default defineThemedFixtureGroup({ path: 'editor/editorTabBar/' }, {
 			expectedVisualDescriptions: [
 				'Editor tabs remain separate rounded pills with no connecting shoulders or connected strip border. High contrast retains explicit selection and focus borders.',
 			],
+		}),
+		// The active pill of a tab stack is outlined in the color of its tab stack and keeps its indicator.
+		PillTabStacksActiveMember: defineComponentFixture({
+			render: render(true, { editorTabStyle: ModernUIEditorTabStyle.Pill, partOptions: { enableTabStacks: true }, editors: activeTabStackMemberEditorSpecs(2) }),
+			additionalThemes: ['darkHighContrast'],
 		}),
 		ThemeColors: defineThemedFixtureGroup(createThemeColorFixtures()),
 	}),

@@ -5,7 +5,7 @@
 
 import { Dimension } from '../../../../base/browser/dom.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
-import { IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView, IInternalEditorOpenOptions } from './editor.js';
+import { IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView, IInternalEditorOpenOptions, TabStackEditorFocus } from './editor.js';
 import { IEditorTabsControl } from './editorTabsControl.js';
 import { MultiEditorTabsControl } from './multiEditorTabsControl.js';
 import { IEditorPartOptions } from '../../../common/editor.js';
@@ -13,7 +13,7 @@ import { EditorInput } from '../../../common/editor/editorInput.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { StickyEditorGroupModel, UnstickyEditorGroupModel } from '../../../common/editor/filteredEditorGroupModel.js';
 import { IEditorTitleControlDimensions } from './editorTitleControl.js';
-import { IReadonlyEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
+import { IReadonlyEditorGroupModel, TabStackId } from '../../../common/editor/editorGroupModel.js';
 
 export class MultiRowEditorControl extends Disposable implements IEditorTabsControl {
 
@@ -184,6 +184,10 @@ export class MultiRowEditorControl extends Disposable implements IEditorTabsCont
 	updateTabStacks(): void {
 		this.stickyEditorTabsControl.updateTabStacks();
 		this.unstickyEditorTabsControl.updateTabStacks();
+	}
+
+	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean {
+		return this.stickyEditorTabsControl.editTabStack(tabStack, focus) || this.unstickyEditorTabsControl.editTabStack(tabStack, focus);
 	}
 
 	updateEditorLabel(editor: EditorInput): void {

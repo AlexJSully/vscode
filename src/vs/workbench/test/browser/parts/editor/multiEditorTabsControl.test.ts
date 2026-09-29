@@ -23,10 +23,10 @@ import { EditorGroupModel, ITabStackUpdate, TabStackId } from '../../../../commo
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { IHostService } from '../../../../services/host/browser/host.js';
 import { INotebookDocumentService, NotebookDocumentWorkbenchService } from '../../../../services/notebook/common/notebookDocumentService.js';
-import { TestFileEditorInput, TestHostService, TestMenuService, workbenchInstantiationService } from '../../workbenchTestServices.js';
+import { getShownTabStackEditor, TestFileEditorInput, TestHostService, TestMenuService, workbenchInstantiationService } from '../../workbenchTestServices.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { IContextMenuMenuDelegate, IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
+import { IContextMenuMenuDelegate, IContextMenuService, IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
 import { TestColorTheme, TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
 import { Action, IActionRunner } from '../../../../../base/common/actions.js';
@@ -94,6 +94,7 @@ suite('MultiEditorTabsControl', () => {
 			// Opening the editor that a selection or a collapse makes active is left to the EditorGroupsService suite.
 			override async setSelection(activeSelectedEditor: EditorInput, inactiveSelectedEditors: EditorInput[]) { model.setSelection(activeSelectedEditor, inactiveSelectedEditors); }
 			override get tabStacks() { return model.tabStacks; }
+			override get onDidModelChange() { return model.onDidModelChange; }
 			override getTabStack(editor: EditorInput) { return model.getTabStack(editor); }
 			override updateTabStack(tabStack: TabStackId, update: ITabStackUpdate) {
 				model.updateTabStack(tabStack, update);
@@ -250,6 +251,14 @@ suite('MultiEditorTabsControl', () => {
 
 	function shownTabs(): HTMLElement[] {
 		return Array.from(container.querySelectorAll<HTMLElement>('.tabs-container > .tab'));
+	}
+
+	/**
+	 * Returns the shown editor of a tab stack, or `undefined` when none is
+	 * shown.
+	 */
+	function shownTabStackEditor(): HTMLElement | undefined {
+		return getShownTabStackEditor(instantiationService.get(IContextViewService));
 	}
 
 	/**
@@ -2165,6 +2174,227 @@ suite('MultiEditorTabsControl', () => {
 				['#1a2b3c', '#ffffff'],
 			],
 			tabs: ['', 'var(--vscode-tabStack-yellow)', 'var(--vscode-tabStack-purple)', '#1a2b3c'],
+		});
+	});
+
+	/**
+	 * Lists the parts of a tab painted in the color `rgb(1, 2, 3)`.
+	 */
+	function partsInTabStackColor(tab: HTMLElement): string[] {
+		const color = 'rgb(1, 2, 3)';
+		const fill = tab.querySelector<HTMLElement>('.tab-fill')!;
+		const fillStyle = mainWindow.getComputedStyle(fill);
+		const shoulders = [mainWindow.getComputedStyle(fill, '::before'), mainWindow.getComputedStyle(fill, '::after')];
+		const indicatorStyle = mainWindow.getComputedStyle(tab.querySelector<HTMLElement>('.tab-stack-indicator')!);
+		const parts: [string, boolean][] = [
+			['top edge', fillStyle.borderTopWidth !== '0px' && fillStyle.borderTopColor === color],
+			['sides', fillStyle.borderLeftWidth !== '0px' && fillStyle.borderLeftColor === color && fillStyle.borderRightWidth !== '0px' && fillStyle.borderRightColor === color],
+			['shoulders', shoulders.every(shoulder => shoulder.content !== 'none' && shoulder.borderBottomColor === color)],
+			['outline', fillStyle.outlineStyle !== 'none' && fillStyle.outlineColor === color],
+			['indicator', indicatorStyle.display !== 'none' && indicatorStyle.backgroundColor === color],
+		];
+
+		return parts.filter(([, painted]) => painted).map(([part]) => part);
+	}
+
+	test('the active tab of a tab stack carries the color of its tab stack in connected, pill and classic tabs', async () => {
+		const group = connectedGroup();
+		const root = group.closest<HTMLElement>('.monaco-workbench')!;
+		const [, b, c] = createTabStacksGroup(['a', 'b', 'c']);
+		addTabStack([b, c], { color: '#010203' });
+		model.openEditor(b, { active: true });
+		control.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL));
+		const [, activeTab, nextTab] = shownTabs();
+		await layoutConnectedGroup(group, 600);
+		const connected = partsInTabStackColor(activeTab);
+		const activeFill = activeTab.querySelector<HTMLElement>('.tab-fill')!;
+		const shoulderBottom = activeFill.getBoundingClientRect().bottom - Number.parseFloat(mainWindow.getComputedStyle(activeFill).borderBottomWidth) - Number.parseFloat(mainWindow.getComputedStyle(activeFill, '::after').bottom);
+		const nextIndicatorMeetsShoulder = nextTab.querySelector<HTMLElement>('.tab-stack-indicator')!.getBoundingClientRect().bottom === shoulderBottom;
+
+		root.classList.remove('modern-ui-connected-editor-tabs');
+		await layoutConnectedGroup(group, 600);
+		const pill = partsInTabStackColor(activeTab);
+
+		root.classList.remove('modern-ui', 'modern-ui-tabs');
+		await layoutConnectedGroup(group, 600);
+
+		assert.deepStrictEqual({ connected, nextIndicatorMeetsShoulder, pill, classic: partsInTabStackColor(activeTab) }, {
+			connected: ['top edge', 'sides', 'shoulders'], // open to the document below it, where the indicators of the tabs next to it meet its shoulders
+			nextIndicatorMeetsShoulder: true,
+			pill: ['outline', 'indicator'],
+			classic: ['indicator'],
+		});
+	});
+
+	test('the overflow edge that stands in for the clipped part of the active tab takes the color of its tab stack only while that tab is in one', async () => {
+		const group = connectedGroup();
+		const [a, b] = createTabStacksGroup(['a', 'b', 'c'], { tabSizing: 'fixed', tabSizingFixedMinWidth: 160, tabSizingFixedMaxWidth: 160, editorActionsLocation: 'hidden' });
+		addTabStack([a], { color: '#010203' });
+		const tabsContainer = container.querySelector<HTMLElement>('.tabs-container')!;
+		const overflowEdge = container.querySelector<HTMLElement>('.tab-connected-overflow-edge')!;
+		const clipActiveTab = async () => {
+			await layoutConnectedGroup(group, 240);
+			tabsContainer.classList.add('scroll');
+			tabsContainer.scrollLeft = container.querySelector<HTMLElement>('.tabs-container > .tab.active')!.offsetLeft + 40;
+			tabsContainer.dispatchEvent(new UIEvent(EventType.SCROLL));
+
+			return {
+				clipped: overflowEdge.classList.contains('connected-tab-left-clipped'),
+				edgeInTabStackColor: mainWindow.getComputedStyle(overflowEdge, '::before').borderLeftColor === 'rgb(1, 2, 3)',
+			};
+		};
+		const inTabStack = await clipActiveTab();
+
+		model.openEditor(b, { active: true });
+		control.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL));
+
+		assert.deepStrictEqual({ inTabStack, outsideTabStack: await clipActiveTab() }, {
+			inTabStack: { clipped: true, edgeInTabStackColor: true },
+			outsideTabStack: { clipped: true, edgeInTabStackColor: false },
+		});
+	});
+
+	test('in classic tabs the indicator of the active tab of a tab stack stays above the border bottom of the active tab', async () => {
+		(instantiationService.get(IThemeService) as TestThemeService).setTheme(new TestColorTheme({ 'tab.activeBorder': '#ff0000' }));
+		const group = classicGroup();
+		const [a, b] = createTabStacksGroup(['a', 'b']);
+		addTabStack([a, b], { color: '#010203' });
+		await layoutConnectedGroup(group, 400);
+		const [activeTab] = shownTabs();
+		const indicator = activeTab.querySelector<HTMLElement>('.tab-stack-indicator')!.getBoundingClientRect();
+		const borderBottom = activeTab.querySelector<HTMLElement>('.tab-border-bottom-container')!.getBoundingClientRect();
+
+		assert.deepStrictEqual({ borderBottomHeight: borderBottom.height, overlap: Math.max(0, indicator.bottom - borderBottom.top) }, { borderBottomHeight: 1, overlap: 0 });
+	});
+
+	test('editTabStack opens the editor of an expanded or a collapsed tab stack, and not for a tab stack without a header, and the editor closes with its header', () => {
+		const [, b, c, d] = createTabStacksGroup(['a', 'b', 'c', 'd']);
+		const auth = addTabStack([b, c], { label: 'Auth' });
+		const docs = addTabStack([d], { label: 'Docs', collapsed: true });
+		const shownName = () => shownTabStackEditor()?.querySelector('input')?.value;
+
+		const expanded = { opened: control.editTabStack(auth), name: shownName() };
+		const collapsed = { opened: control.editTabStack(docs), name: shownName() };
+		const unknown = control.editTabStack('unknown');
+		const oldOptions = partOptions;
+		partOptions = { ...partOptions, enableTabStacks: false };
+		control.updateOptions(oldOptions, partOptions);
+
+		assert.deepStrictEqual({ expanded, collapsed, unknown, afterDisabling: { name: shownName(), opened: control.editTabStack(auth) } }, {
+			expanded: { opened: true, name: 'Auth' },
+			collapsed: { opened: true, name: 'Docs' },
+			unknown: false,
+			afterDisabling: { name: undefined, opened: false },
+		});
+	});
+
+	test('editTabStack of pinned tabs on a separate row opens the editor from the row that shows the header', () => {
+		const [s, , b] = createTabStacksGroup(['s', 'a', 'b'], { pinnedTabsOnSeparateRow: true });
+		model.stick(s);
+		const tabStack = addTabStack([b], { label: 'Auth' });
+		control.dispose();
+		container.replaceChildren();
+		const multiRowControl = disposables.add(instantiationService.createInstance(MultiRowEditorControl, container, editorPartsView, groupsView, groupView, model, undefined, false, false));
+		multiRowControl.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL));
+
+		assert.deepStrictEqual({ opened: multiRowControl.editTabStack(tabStack), name: shownTabStackEditor()?.querySelector('input')?.value }, {
+			opened: true,
+			name: 'Auth',
+		});
+	});
+
+	test('typing a name in the editor of a tab stack keeps the tabs scrolled where they are rather than revealing the active tab', async () => {
+		const group = classicGroup();
+		const [, , , , , f] = createTabStacksGroup(['a', 'b', 'c', 'd', 'e', 'f'], { tabSizing: 'fixed', tabSizingFixedMinWidth: 100, tabSizingFixedMaxWidth: 100, editorActionsLocation: 'hidden' });
+		const tabStack = addTabStack([f]);
+		await layoutConnectedGroup(group, 250);
+		const tabsContainer = container.querySelector<HTMLElement>('.tabs-container')!;
+		tabsContainer.classList.add('scroll');
+		tabsContainer.scrollLeft = tabsContainer.scrollWidth - tabsContainer.clientWidth;
+		tabsContainer.dispatchEvent(new UIEvent(EventType.SCROLL));
+		tabsContainer.classList.remove('scroll');
+		const scrollLeft = tabsContainer.scrollLeft;
+
+		control.editTabStack(tabStack);
+		const input = shownTabStackEditor()!.querySelector('input')!;
+		input.value = 'Auth';
+		input.dispatchEvent(new InputEvent(EventType.INPUT));
+		await nextAnimationFrame();
+
+		assert.deepStrictEqual({ tabs: strip(), scrolled: scrollLeft > 0, keptScrollLeft: tabsContainer.scrollLeft === scrollLeft, revealed: isActiveTabRevealed() }, {
+			tabs: ['T:a', 'T:b', 'T:c', 'T:d', 'T:e', 'H:Auth', 'T:f*'],
+			scrolled: true,
+			keptScrollLeft: true,
+			revealed: false,
+		});
+	});
+
+	test('the editor of a tab stack stays under its header when a layout of the tabs moves the header', async () => {
+		const group = classicGroup();
+		const [, , , , , f] = createTabStacksGroup(['a', 'b', 'c', 'd', 'e', 'f'], { tabSizing: 'fixed', tabSizingFixedMinWidth: 100, tabSizingFixedMaxWidth: 100, editorActionsLocation: 'hidden' });
+		const tabStack = addTabStack([f]);
+		await layoutConnectedGroup(group, 250);
+		const [header] = tabStackHeaders();
+		const offsetFromHeader = () => Math.round(shownTabStackEditor()!.getBoundingClientRect().left - header.getBoundingClientRect().left);
+
+		control.editTabStack(tabStack);
+		const headerLeft = header.getBoundingClientRect().left;
+		const offsetBefore = offsetFromHeader();
+		model.openEditor(f, { active: true });
+		control.openEditors([f]);
+		await nextAnimationFrame();
+
+		assert.deepStrictEqual({ offsetBefore, headerMoved: header.getBoundingClientRect().left < headerLeft, offsetAfter: offsetFromHeader() }, {
+			offsetBefore: 0,
+			headerMoved: true,
+			offsetAfter: 0,
+		});
+	});
+
+	test('the editor of a tab stack stays under its header when the tabs scroll', async () => {
+		const group = classicGroup();
+		const [, b] = createTabStacksGroup(['a', 'b', 'c', 'd', 'e', 'f'], { tabSizing: 'fixed', tabSizingFixedMinWidth: 100, tabSizingFixedMaxWidth: 100, editorActionsLocation: 'hidden' });
+		const tabStack = addTabStack([b]);
+		await layoutConnectedGroup(group, 250);
+		const [header] = tabStackHeaders();
+		const offsetFromHeader = () => Math.round(shownTabStackEditor()!.getBoundingClientRect().left - header.getBoundingClientRect().left);
+		control.editTabStack(tabStack);
+		const headerLeft = header.getBoundingClientRect().left;
+		const offsetBefore = offsetFromHeader();
+
+		const tabsContainer = container.querySelector<HTMLElement>('.tabs-container')!;
+		tabsContainer.classList.add('scroll');
+		tabsContainer.scrollLeft = 60;
+		tabsContainer.dispatchEvent(new UIEvent(EventType.SCROLL));
+		tabsContainer.classList.remove('scroll');
+
+		assert.deepStrictEqual({ offsetBefore, headerMoved: header.getBoundingClientRect().left < headerLeft, offsetAfter: offsetFromHeader() }, {
+			offsetBefore: 0,
+			headerMoved: true,
+			offsetAfter: 0,
+		});
+	});
+
+	test('editTabStack first scrolls a header that the tabs have scrolled out of view into view, where the layout that the new tab stack scheduled keeps it', async () => {
+		const group = classicGroup();
+		const editors = createTabStacksGroup(['a', 'b', 'c', 'd', 'e', 'f'], { tabSizing: 'fixed', tabSizingFixedMinWidth: 100, tabSizingFixedMaxWidth: 100, editorActionsLocation: 'hidden' });
+		model.openEditor(editors[5], { active: true });
+		control.openEditors([editors[5]]);
+		await layoutConnectedGroup(group, 250);
+		const viewport = container.querySelector<HTMLElement>('.monaco-scrollable-element')!;
+		const isInView = (element: HTMLElement) => element.getBoundingClientRect().left >= viewport.getBoundingClientRect().left && element.getBoundingClientRect().right <= viewport.getBoundingClientRect().right;
+
+		const tabStack = addTabStack(editors);
+		const [header] = tabStackHeaders();
+		const headerInViewBefore = isInView(header);
+		const opened = control.editTabStack(tabStack);
+		await nextAnimationFrame();
+
+		assert.deepStrictEqual({ headerInViewBefore, opened, headerInView: isInView(header), offsetFromHeader: Math.round(shownTabStackEditor()!.getBoundingClientRect().left - header.getBoundingClientRect().left) }, {
+			headerInViewBefore: false,
+			opened: true,
+			headerInView: true,
+			offsetFromHeader: 0,
 		});
 	});
 

@@ -9,7 +9,7 @@ import { GroupDirection, GroupsOrder, MergeGroupMode, GroupOrientation, GroupLoc
 import { CloseDirection, IEditorPartOptions, EditorsOrder, EditorInputCapabilities, GroupModelChangeKind, SideBySideEditor, IEditorFactoryRegistry, EditorExtensions } from '../../../../common/editor.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
-import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { MockScopableContextKeyService } from '../../../../../platform/keybinding/test/common/mockKeybindingService.js';
 import { ConfirmResult } from '../../../../../platform/dialogs/common/dialogs.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
@@ -28,6 +28,7 @@ import { ActiveEditorInTabStackContext, EditorGroupHasTabStacksContext } from '.
 import { mock } from '../../../../../base/test/common/mock.js';
 import { IContextMenuMenuDelegate, IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IEditorGroupView } from '../../../../browser/parts/editor/editor.js';
+import { mainWindow } from '../../../../../base/browser/window.js';
 
 suite('EditorGroupsService', () => {
 
@@ -2557,6 +2558,28 @@ suite('EditorGroupsService', () => {
 		assert.deepStrictEqual({ whileEnforced, afterwards: tabStackState(group) }, {
 			whileEnforced: '1a^ 2a^ 3b 4*',
 			afterwards: '1a^ 2a^ 3b 4*'
+		});
+	});
+
+	test('tab stacks - editTabStack opens the editor of a tab stack only while the tab bar shows the header of the tab stack', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const partContainer = part.getContainer()!;
+		mainWindow.document.body.appendChild(partContainer);
+		disposables.add(toDisposable(() => partContainer.remove()));
+		const group = part.activeGroup;
+
+		const [first] = await openPinnedTestEditors(group, '1', '2');
+		const tabStack = group.addEditorsToTabStack([first])!.id;
+
+		const opened = group.editTabStack(tabStack);
+		const enforced = part.enforcePartOptions({ showTabs: 'single' });
+		const openedWithSingleTab = group.editTabStack(tabStack);
+		enforced.dispose();
+
+		assert.deepStrictEqual({ opened, openedWithSingleTab, openedWithTabsAgain: group.editTabStack(tabStack) }, {
+			opened: true,
+			openedWithSingleTab: false,
+			openedWithTabsAgain: true
 		});
 	});
 

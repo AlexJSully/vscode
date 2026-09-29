@@ -28,7 +28,7 @@ import { DisposableStore, MutableDisposable, toDisposable } from '../../../../ba
 import { ITelemetryData, ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { DeferredPromise, Promises, RunOnceWorker } from '../../../../base/common/async.js';
 import { EventType as TouchEventType, GestureEvent } from '../../../../base/browser/touch.js';
-import { IEditorGroupsView, IEditorGroupView, fillActiveEditorViewState, EditorServiceImpl, IEditorGroupTitleHeight, IInternalEditorOpenOptions, IInternalMoveCopyOptions, IInternalEditorCloseOptions, IEditorPartsView, IEditorGroupViewOptions, getIndexPastTabStack } from './editor.js';
+import { IEditorGroupsView, IEditorGroupView, fillActiveEditorViewState, EditorServiceImpl, IEditorGroupTitleHeight, IInternalEditorOpenOptions, IInternalMoveCopyOptions, IInternalEditorCloseOptions, IEditorPartsView, IEditorGroupViewOptions, getIndexPastTabStack, TabStackEditorFocus } from './editor.js';
 import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { Separator, SubmenuAction } from '../../../../base/common/actions.js';
@@ -1245,6 +1245,10 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		for (const { editor } of result.moves) {
 			this.pinEditor(editor);
 		}
+	}
+
+	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean {
+		return this.titleControl.editTabStack(tabStack, focus);
 	}
 
 	/**

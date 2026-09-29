@@ -586,8 +586,9 @@
 	pointer-events: none;
 }
 
-.monaco-workbench:not(.modern-ui-tabs) .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.tabs-border-bottom:not(.wrapping) .tabs-container > .tab.tab-stack-member > .tab-stack-indicator {
-	bottom: var(--vscode-strokeThickness); /* stay above the tabs border bottom, which is drawn over the tabs */
+.monaco-workbench:not(.modern-ui-tabs) .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.tabs-border-bottom:not(.wrapping) .tabs-container > .tab.tab-stack-member > .tab-stack-indicator,
+.monaco-workbench:not(.modern-ui-tabs) .part.editor > .content .editor-group-container > .title .tabs-container > .tab.active.tab-border-bottom.tab-stack-member > .tab-stack-indicator {
+	bottom: var(--vscode-strokeThickness); /* stay above the tabs border bottom and the border bottom of the active tab, which are drawn over the tabs */
 }
 
 /* Editor Actions Toolbar */

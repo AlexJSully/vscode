@@ -134,6 +134,17 @@
 	right: var(--vscode-spacing-size20);
 }
 
+/* The active pill of a tab stack also has an outline in the color of its tab stack, inside
+ * the border that high contrast draws around the pill. */
+.modern-ui-tabs.monaco-workbench:not(.modern-ui-connected-editor-tabs) .part.editor > .content .editor-group-container > .title .tabs-container > .tab.active.tab-stack-member > .tab-fill {
+	outline: var(--vscode-strokeThickness) solid var(--tab-stack-color);
+	outline-offset: calc(-1 * var(--vscode-strokeThickness));
+}
+
+:is(.hc-black, .hc-light).modern-ui-tabs.monaco-workbench:not(.modern-ui-connected-editor-tabs) .part.editor > .content .editor-group-container > .title .tabs-container > .tab.active.tab-stack-member > .tab-fill {
+	outline-offset: calc(-2 * var(--vscode-strokeThickness));
+}
+
 .modern-ui-tabs .part.editor .tabs-container > .tab > .tab-label,
 .modern-ui-tabs .modern-ui-editor-tab > .modern-ui-editor-tab-label {
 	position: relative;

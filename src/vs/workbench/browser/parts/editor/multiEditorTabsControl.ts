@@ -28,14 +28,14 @@ import { ScrollbarVisibility } from '../../../../base/common/scrollable.js';
 import { getOrSet, LRUCache } from '../../../../base/common/map.js';
 import { IThemeService, registerThemingParticipant } from '../../../../platform/theme/common/themeService.js';
 import { TAB_INACTIVE_BACKGROUND, TAB_ACTIVE_BACKGROUND, TAB_BORDER, EDITOR_DRAG_AND_DROP_BACKGROUND, TAB_UNFOCUSED_ACTIVE_BACKGROUND, TAB_UNFOCUSED_ACTIVE_BORDER, TAB_ACTIVE_BORDER, TAB_HOVER_BACKGROUND, TAB_HOVER_BORDER, TAB_UNFOCUSED_HOVER_BACKGROUND, TAB_UNFOCUSED_HOVER_BORDER, EDITOR_GROUP_HEADER_TABS_BACKGROUND, WORKBENCH_BACKGROUND, TAB_ACTIVE_BORDER_TOP, TAB_UNFOCUSED_ACTIVE_BORDER_TOP, TAB_ACTIVE_MODIFIED_BORDER, TAB_INACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_ACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_INACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_INACTIVE_BACKGROUND, TAB_HOVER_FOREGROUND, TAB_UNFOCUSED_HOVER_FOREGROUND, EDITOR_GROUP_HEADER_TABS_BORDER, TAB_LAST_PINNED_BORDER, TAB_SELECTED_BORDER_TOP, TAB_STACK_COLOR_IDS } from '../../../common/theme.js';
-import { activeContrastBorder, asCssVariable, contrastBorder, editorBackground } from '../../../../platform/theme/common/colorRegistry.js';
+import { activeContrastBorder, contrastBorder, editorBackground } from '../../../../platform/theme/common/colorRegistry.js';
 import { ResourcesDropHandler, DraggedEditorIdentifier, DraggedEditorGroupIdentifier, extractTreeDropData, isWindowDraggedOver } from '../../dnd.js';
 import { Color } from '../../../../base/common/color.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { MergeGroupMode, IMergeGroupOptions } from '../../../services/editor/common/editorGroupsService.js';
 import { addDisposableListener, EventType, EventHelper, Dimension, scheduleAtNextAnimationFrame, findParentWithClass, clearNode, DragAndDropObserver, isMouseEvent, getWindow, ModifierKeyEmitter, $, isHTMLElement } from '../../../../base/browser/dom.js';
 import { localize } from '../../../../nls.js';
-import { CONNECTED_EDITOR_TABS_SELECTOR, IEditorGroupMenuIds, IEditorGroupsView, EditorServiceImpl, IEditorGroupView, IInternalEditorOpenOptions, IEditorPartsView, prepareMoveCopyEditors, isTabStacksEnabled, EditorTabStackContextMenuId } from './editor.js';
+import { CONNECTED_EDITOR_TABS_SELECTOR, IEditorGroupMenuIds, IEditorGroupsView, EditorServiceImpl, IEditorGroupView, IInternalEditorOpenOptions, IEditorPartsView, prepareMoveCopyEditors, isTabStacksEnabled, EditorTabStackContextMenuId, TabStackEditorFocus } from './editor.js';
 import { CloseEditorTabAction, CloseOtherEditorTabsInGroupAction, UnpinEditorAction } from './editorActions.js';
 import { assertReturnsAllDefined, assertReturnsDefined } from '../../../../base/common/types.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
@@ -63,6 +63,7 @@ import { nextCharLength } from '../../../../base/common/strings.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { ActionRunner } from '../../../../base/common/actions.js';
+import { getTabStackColorCssValue, TabStackEditor, TabStackEditorGroup } from './tabStackEditor.js';
 
 interface IEditorInputLabel {
 	readonly editor: EditorInput;
@@ -104,6 +105,12 @@ interface ITabStackHeader extends IDisposable {
 	 * The element showing the name of the tab stack.
 	 */
 	readonly label: HTMLElement;
+
+	/**
+	 * The name and color bubble of the tab stack under the header, which
+	 * closes with the header.
+	 */
+	readonly bubble: MutableDisposable<TabStackEditor>;
 }
 
 export class MultiEditorTabsControl extends EditorTabsControl {
@@ -367,6 +374,7 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			if (e.scrollLeftChanged) {
 				scrollable.scrollLeft = e.scrollLeft;
 				this.updateConnectedTabClipping(e.scrollLeft);
+				this.layoutTabStackBubbles();
 			}
 		}));
 
@@ -2053,15 +2061,26 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		// children that a tab is created with, so it is the last child of the tab
 		const indicator = tabContainer.lastElementChild?.classList.contains('tab-stack-indicator') ? tabContainer.lastElementChild : undefined;
 
-		tabContainer.classList.toggle('tab-stack-member', !!tabStack);
+		this.redrawTabStackColor(tabContainer, 'tab-stack-member', tabStack);
 		if (tabStack) {
-			tabContainer.style.setProperty('--tab-stack-color', this.getTabStackColorValue(tabStack.color));
 			if (!indicator) {
 				tabContainer.appendChild($('.tab-stack-indicator', { 'aria-hidden': true }));
 			}
 		} else {
-			tabContainer.style.removeProperty('--tab-stack-color');
 			indicator?.remove();
+		}
+	}
+
+	/**
+	 * Marks the element with the class name while there is a tab stack, and gives it
+	 * the color of the tab stack.
+	 */
+	private redrawTabStackColor(element: HTMLElement, className: string, tabStack: ITabStack | undefined): void {
+		element.classList.toggle(className, !!tabStack);
+		if (tabStack) {
+			element.style.setProperty('--tab-stack-color', getTabStackColorCssValue(tabStack.color));
+		} else {
+			element.style.removeProperty('--tab-stack-color');
 		}
 	}
 
@@ -2174,11 +2193,14 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		const label = $('span.tab-stack-header-label');
 		const element = $('.tab-stack-header', { role: 'tab', 'aria-selected': 'false', tabindex: '-1' }, $('.tab-stack-header-chip', undefined, label));
 		const listeners = this.registerTabStackHeaderListeners(element, tabStackId, tabsScrollbar);
+		const bubble = new MutableDisposable<TabStackEditor>();
 
 		return {
 			element,
 			label,
+			bubble,
 			dispose: () => {
+				bubble.dispose();
 				listeners.dispose();
 				element.remove();
 			}
@@ -2262,7 +2284,7 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		element.setAttribute('aria-label', this.getTabStackHeaderAriaLabel(tabStack));
 		label.textContent = tabStack.label;
 
-		element.style.setProperty('--tab-stack-color', this.getTabStackColorValue(tabStack.color));
+		element.style.setProperty('--tab-stack-color', getTabStackColorCssValue(tabStack.color));
 		const foreground = this.getTabStackForeground(tabStack.color);
 		if (foreground) {
 			element.style.setProperty('--tab-stack-foreground', foreground);
@@ -2302,14 +2324,6 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 	}
 
 	/**
-	 * Returns the CSS value of a tab stack color: the variable of the theme
-	 * color of a preset, or the hex value of a custom color.
-	 */
-	private getTabStackColorValue(color: TabStackColor): string {
-		return isTabStackPresetColor(color) ? asCssVariable(TAB_STACK_COLOR_IDS[color]) : color;
-	}
-
-	/**
 	 * Returns black or white, whichever contrasts more with the tab stack
 	 * color shown over the tabs background, or `undefined` when the theme has
 	 * no value for a preset color. No single theme color contrasts with every
@@ -2341,6 +2355,72 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		}
 
 		this.groupView.updateTabStack(tabStackId, { collapsed: !tabStack.collapsed });
+	}
+
+	editTabStack(tabStackId: TabStackId, focus?: TabStackEditorFocus): boolean {
+		const header = this.tabStackHeaders.get(tabStackId);
+		if (!header || !isTabStacksEnabled(this.groupsView.partOptions) || !this.isTabStackHeaderShown(header.element)) {
+			return false;
+		}
+
+		this.withoutRevealingActiveTab(() => this.revealTabStackHeader(header.element));
+
+		const groupView = this.groupView;
+		const group: TabStackEditorGroup = {
+			get tabStacks() { return groupView.tabStacks; },
+			onDidModelChange: groupView.onDidModelChange,
+			updateTabStack: (tabStack, update) => this.withoutRevealingActiveTab(() => groupView.updateTabStack(tabStack, update))
+		};
+		header.bubble.value = this.instantiationService.createInstance(TabStackEditor, header.element, group, tabStackId);
+		header.bubble.value.show(focus);
+
+		return true;
+	}
+
+	/**
+	 * Returns whether the header is in the tabs container and takes up space,
+	 * which it does not while the editor part is hidden.
+	 */
+	private isTabStackHeaderShown(header: HTMLElement): boolean {
+		return header.parentElement === this.tabsContainer && header.getClientRects().length > 0;
+	}
+
+	/**
+	 * Scrolls the tabs so that the header is within their visible part, past
+	 * the sticky tabs and before the Add Tab control. Wrapped tabs show every
+	 * header already.
+	 */
+	private revealTabStackHeader(header: HTMLElement): void {
+		const [tabsContainer, tabsScrollbar] = assertReturnsAllDefined(this.tabsContainer, this.tabsScrollbar);
+		if (this.tabsAndActionsContainer?.classList.contains('wrapping')) {
+			return;
+		}
+
+		tabsScrollbar.setScrollDimensions({ width: tabsContainer.offsetWidth, scrollWidth: tabsContainer.scrollWidth });
+		const scrollLeft = tabsScrollbar.getScrollPosition().scrollLeft;
+		const viewportLeft = scrollLeft + (this.stickyTabsBackground?.offsetWidth ?? 0);
+		const viewportRight = scrollLeft + tabsContainer.offsetWidth - (this.addTabContainer?.offsetWidth ?? 0);
+		const headerRight = header.offsetLeft + header.offsetWidth;
+		if (header.offsetLeft < viewportLeft) {
+			tabsScrollbar.setScrollPosition({ scrollLeft: scrollLeft - (viewportLeft - header.offsetLeft) });
+		} else if (headerRight > viewportRight) {
+			tabsScrollbar.setScrollPosition({ scrollLeft: scrollLeft + (headerRight - viewportRight) });
+		}
+	}
+
+	/**
+	 * Runs a change for the name and color bubble of a tab stack, keeping the
+	 * tabs scrolled where they are rather than revealing the active tab, so
+	 * that the bubble stays under the header.
+	 */
+	private withoutRevealingActiveTab(change: () => void): void {
+		this.blockRevealActiveTabOnce();
+		change();
+
+		// A change that ends without a layout lifts the block again
+		if (!this.layoutScheduler.value) {
+			this.blockRevealActiveTab = false;
+		}
 	}
 
 	private onTabStackHeaderContextMenu(tabStackId: TabStackId, e: Event, header: HTMLElement): void {
@@ -2478,6 +2558,18 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		// e.g. the editor control can be adjusted accordingly.
 		if (oldDimension && oldDimension.height !== newDimension.height) {
 			this.groupView.relayout();
+		}
+
+		this.layoutTabStackBubbles();
+	}
+
+	/**
+	 * Moves the open name and color bubble of a tab stack under its header
+	 * again, after a layout or a scroll of the tabs moved the header.
+	 */
+	private layoutTabStackBubbles(): void {
+		for (const header of this.tabStackHeaders.values()) {
+			header.bubble.value?.layout();
 		}
 	}
 
@@ -2829,6 +2921,9 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 				viewportRight,
 				shoulderExtent: Number.parseFloat(targetWindow.getComputedStyle(activeTabFill, '::after').width),
 			};
+
+			// The overflow edge stands in for the clipped part of the active tab, so it takes the color of its tab stack too
+			this.redrawTabStackColor(overflowEdge, 'in-tab-stack', this.tabsModel.activeEditor ? this.getShownTabStack(this.tabsModel.activeEditor) : undefined);
 		}
 
 		let activeTabPosX: number | undefined;
@@ -2938,6 +3033,9 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 
 	private clearConnectedTabClipping(): void {
 		clearConnectedTabClipping(this.connectedTabBounds?.tab, this.connectedTabOverflowEdge);
+		if (this.connectedTabOverflowEdge) {
+			this.redrawTabStackColor(this.connectedTabOverflowEdge, 'in-tab-stack', undefined);
+		}
 		this.connectedTabBounds = undefined;
 	}
 

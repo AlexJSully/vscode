@@ -8,8 +8,10 @@ import { ThemeIcon, themeColorFromId } from '../../../../base/common/themables.j
 import { URI } from '../../../../base/common/uri.js';
 import { localize } from '../../../../nls.js';
 import { IQuickInputService, IQuickPickItem, QuickPickInput } from '../../../../platform/quickinput/common/quickInput.js';
+import { EditorInput } from '../../../common/editor/editorInput.js';
 import { ITabStack, isTabStackPresetColor, parseTabStackColor, TAB_STACK_COLORS, TabStackColor, TabStackId, TabStackPresetColor } from '../../../common/editor/editorGroupModel.js';
 import { TAB_STACK_COLOR_IDS } from '../../../common/theme.js';
+import { IEditorGroupView } from './editor.js';
 
 /**
  * An item of the quick pick that picks the color of a tab stack.
@@ -66,6 +68,24 @@ const TAB_STACK_COLOR_LABELS: { readonly [color in TabStackPresetColor]: string 
 };
 
 /**
+ * The label of the action that asks for a custom tab stack color.
+ */
+export const TAB_STACK_CUSTOM_COLOR_LABEL = localize('tabStackCustomColor', "Custom Color...");
+
+/**
+ * The editor group that the commands of tab stacks change tab stacks of.
+ */
+type TabStackCommandsGroup = Pick<IEditorGroupView, 'addEditorsToTabStack' | 'updateTabStack' | 'editTabStack'>;
+
+/**
+ * Returns the name of a tab stack color: the localized name of a preset
+ * color, or the hex value of a custom color.
+ */
+export function getTabStackColorLabel(color: TabStackColor): string {
+	return isTabStackPresetColor(color) ? TAB_STACK_COLOR_LABELS[color] : color;
+}
+
+/**
  * Returns the icon that shows a tab stack color in a quick pick: a filled
  * circle in the theme color of a preset color, or an SVG image of a circle
  * filled with a custom color, which is not a theme color.
@@ -88,15 +108,15 @@ function getTabStackColorIcon(color: TabStackColor): Pick<IQuickPickItem, 'iconC
 export function getTabStackColorPicks(currentColor: TabStackColor): ITabStackColorPicks {
 	const colorItems: ITabStackColorPickItem[] = TAB_STACK_COLORS.map(color => ({
 		color,
-		label: TAB_STACK_COLOR_LABELS[color],
+		label: getTabStackColorLabel(color),
 		...getTabStackColorIcon(color)
 	}));
 
 	if (!isTabStackPresetColor(currentColor)) {
-		colorItems.push({ color: currentColor, label: currentColor, ...getTabStackColorIcon(currentColor) });
+		colorItems.push({ color: currentColor, label: getTabStackColorLabel(currentColor), ...getTabStackColorIcon(currentColor) });
 	}
 
-	const customColorItem: ITabStackColorPickItem = { color: undefined, label: localize('tabStackCustomColor', "Custom Color...") };
+	const customColorItem: ITabStackColorPickItem = { color: undefined, label: TAB_STACK_CUSTOM_COLOR_LABEL };
 
 	return {
 		items: [...colorItems, { type: 'separator' }, customColorItem],
@@ -175,10 +195,16 @@ export async function pickTabStackColor(quickInputService: IQuickInputService, c
 		return undefined;
 	}
 
-	if (pick.color) {
-		return pick.color;
-	}
+	return pick.color ?? inputCustomTabStackColor(quickInputService, currentColor);
+}
 
+/**
+ * Asks for a custom color, as a hex value, for a tab stack whose color is
+ * `currentColor`. The input starts from the current color when it is custom.
+ *
+ * @returns the custom color, or `undefined` when the input was dismissed.
+ */
+export async function inputCustomTabStackColor(quickInputService: IQuickInputService, currentColor: TabStackColor): Promise<TabStackColor | undefined> {
 	const customColor = await quickInputService.input({
 		value: isTabStackPresetColor(currentColor) ? '' : currentColor,
 		prompt: localize('tabStackCustomColorPrompt', "Enter a color as a hex value such as #1a2b3c or #fff"),
@@ -201,4 +227,55 @@ export async function inputTabStackLabel(quickInputService: IQuickInputService, 
 	});
 
 	return value?.trim();
+}
+
+/**
+ * Adds editors of the group to a tab stack, or to a new tab stack when
+ * `tabStack` is `undefined`. A new tab stack then opens its name and color
+ * bubble under its header when the tab bar shows that header, to be named
+ * right away, the way Chromium opens the editor bubble of a new tab group.
+ *
+ * @returns the tab stack the editors were added to, or `undefined` when
+ * `workbench.editor.enableTabStacks` is off, `tabStack` does not exist, or no
+ * editor could join a new tab stack.
+ */
+export function addEditorsToTabStackAndEditNew(group: TabStackCommandsGroup, editors: readonly EditorInput[], tabStack?: TabStackId): ITabStack | undefined {
+	const result = group.addEditorsToTabStack(editors, tabStack);
+	if (result && tabStack === undefined) {
+		group.editTabStack(result.id);
+	}
+
+	return result;
+}
+
+/**
+ * Asks for the name of a tab stack in its name and color bubble under its
+ * header, with the name focused, or with a quick input when the tab bar does
+ * not show its header.
+ */
+export async function renameTabStack(group: TabStackCommandsGroup, tabStack: ITabStack, quickInputService: IQuickInputService): Promise<void> {
+	if (group.editTabStack(tabStack.id)) {
+		return;
+	}
+
+	const label = await inputTabStackLabel(quickInputService, tabStack.label);
+	if (label !== undefined) {
+		group.updateTabStack(tabStack.id, { label });
+	}
+}
+
+/**
+ * Asks for the color of a tab stack in its name and color bubble under its
+ * header, with the checked color focused, or with a quick pick when the tab
+ * bar does not show its header.
+ */
+export async function changeTabStackColor(group: TabStackCommandsGroup, tabStack: ITabStack, quickInputService: IQuickInputService): Promise<void> {
+	if (group.editTabStack(tabStack.id, 'color')) {
+		return;
+	}
+
+	const color = await pickTabStackColor(quickInputService, tabStack.color);
+	if (color) {
+		group.updateTabStack(tabStack.id, { color });
+	}
 }

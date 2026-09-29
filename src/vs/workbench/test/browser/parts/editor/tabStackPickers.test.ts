@@ -4,14 +4,25 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { getActiveElement } from '../../../../../base/browser/dom.js';
+import { mainWindow } from '../../../../../base/browser/window.js';
+import { DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
+import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
+import { TestInstantiationService } from '../../../../../platform/instantiation/test/common/instantiationServiceMock.js';
 import { IInputOptions, IPickOptions, IQuickInputService, IQuickPickItem, QuickPickInput } from '../../../../../platform/quickinput/common/quickInput.js';
-import { getTabStackColorPicks, getTabStackPicks, inputTabStackLabel, ITabStackColorPickItem, parseCustomTabStackColor, pickTabStack, pickTabStackColor } from '../../../../browser/parts/editor/tabStackPickers.js';
+import { Registry } from '../../../../../platform/registry/common/platform.js';
+import { IEditorGroupView } from '../../../../browser/parts/editor/editor.js';
+import { addEditorsToTabStackAndEditNew, changeTabStackColor, getTabStackColorPicks, getTabStackPicks, inputTabStackLabel, ITabStackColorPickItem, parseCustomTabStackColor, pickTabStack, pickTabStackColor, renameTabStack } from '../../../../browser/parts/editor/tabStackPickers.js';
+import { EditorExtensions, IEditorFactoryRegistry } from '../../../../common/editor.js';
+import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { ITabStack } from '../../../../common/editor/editorGroupModel.js';
-import { TestEditorInput } from '../../workbenchTestServices.js';
+import { IEditorGroupsService } from '../../../../services/editor/common/editorGroupsService.js';
+import { createEditorPart, getShownTabStackEditor, registerTestEditor, TestEditorInput, TestFileEditorInput, workbenchInstantiationService, workbenchTeardown } from '../../workbenchTestServices.js';
 
 /**
  * Stands in for the quick input UI, which waits for the user to pick or type:
@@ -44,10 +55,52 @@ class TestQuickInputService extends mock<IQuickInputService>() {
 suite('TabStackPickers', () => {
 
 	const disposables = new DisposableStore();
+	let partInstantiationService: TestInstantiationService | undefined;
 
-	teardown(() => {
+	teardown(async () => {
+		if (partInstantiationService) {
+			await workbenchTeardown(partInstantiationService);
+			partInstantiationService = undefined;
+		}
+
 		disposables.clear();
 	});
+
+	/**
+	 * Shows an editor part with tab stacks enabled in the window, with a pinned
+	 * editor per name in its group.
+	 */
+	async function createTabStacksGroup(...names: string[]): Promise<{ group: IEditorGroupView; editors: EditorInput[]; partContainer: HTMLElement }> {
+		const configurationService = new TestConfigurationService({ workbench: { editor: { enableTabStacks: true } } });
+		disposables.add(configurationService.onDidChangeConfigurationEmitter);
+		const instantiationService = partInstantiationService = workbenchInstantiationService({ configurationService: () => configurationService }, disposables);
+		disposables.add(registerTestEditor('tabStackPickersTestEditor', [new SyncDescriptor(TestFileEditorInput)], 'tabStackPickersTestEditorInput'));
+		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+		const part = await createEditorPart(instantiationService, disposables);
+		instantiationService.stub(IEditorGroupsService, part);
+		const partContainer = part.getContainer()!;
+		mainWindow.document.body.appendChild(partContainer);
+		disposables.add(toDisposable(() => partContainer.remove()));
+
+		const editors = names.map(name => disposables.add(new TestFileEditorInput(URI.file(`/path/${name}`), 'tabStackPickersTestEditorInput')));
+		for (const editor of editors) {
+			await part.activeGroup.openEditor(editor, { pinned: true });
+		}
+
+		return { group: part.activeGroup, editors, partContainer };
+	}
+
+	/**
+	 * Returns the name in the shown editor of a tab stack, or `undefined` when
+	 * none is shown.
+	 */
+	function shownTabStackEditorName(): string | undefined {
+		return getShownTabStackEditor(partInstantiationService!.get(IContextViewService))?.querySelector('input')?.value;
+	}
+
+	function hideTabStackEditor(): void {
+		partInstantiationService!.get(IContextViewService).hideContextView();
+	}
 
 	/**
 	 * Describes the icon of an item as the media type and the fill of its SVG
@@ -209,6 +262,60 @@ suite('TabStackPickers', () => {
 			dismissed: undefined,
 			label: 'Auth',
 			dismissedLabel: undefined
+		});
+	});
+
+	test('adding editors to a new tab stack opens the editor of the new tab stack, and adding them to a tab stack does not', async () => {
+		const { group, editors: [a, b] } = await createTabStacksGroup('a', 'b', 'c');
+
+		const created = addEditorsToTabStackAndEditNew(group, [a])!;
+		const createdEditorName = shownTabStackEditorName();
+		hideTabStackEditor();
+		const joined = addEditorsToTabStackAndEditNew(group, [b], created.id);
+
+		assert.deepStrictEqual({ createdEditorName, joinedSameTabStack: joined?.id === created.id, joinedEditorName: shownTabStackEditorName(), members: group.tabStacks.map(tabStack => tabStack.editors.map(editor => editor.resource?.path)) }, {
+			createdEditorName: '',
+			joinedSameTabStack: true,
+			joinedEditorName: undefined,
+			members: [['/path/a', '/path/b']]
+		});
+	});
+
+	test('renaming or recoloring a tab stack opens its editor, focused on the name or the color, while its header is shown, and otherwise asks with a quick input', async () => {
+		const { group, editors: [a], partContainer } = await createTabStacksGroup('a', 'b');
+		const tabStack = group.addEditorsToTabStack([a])!;
+		const editorNameAfterCreatingWithTheGroup = shownTabStackEditorName();
+		group.updateTabStack(tabStack.id, { label: 'Auth', color: 'green' });
+		const quickInputService = new TestQuickInputService('Red', ' Docs ');
+		const focusedLabel = () => getActiveElement()?.getAttribute('aria-label');
+
+		await renameTabStack(group, group.tabStacks[0], quickInputService);
+		const rename = { name: shownTabStackEditorName(), focused: focusedLabel() };
+		hideTabStackEditor();
+		await changeTabStackColor(group, group.tabStacks[0], quickInputService);
+		const recolor = { name: shownTabStackEditorName(), focused: focusedLabel() };
+		hideTabStackEditor();
+		const askedWithHeader = { inputs: quickInputService.inputOptions.length, picks: quickInputService.activeItems.length };
+
+		// A hidden editor part shows no header
+		partContainer.style.display = 'none';
+		await renameTabStack(group, group.tabStacks[0], quickInputService);
+		await changeTabStackColor(group, group.tabStacks[0], quickInputService);
+
+		assert.deepStrictEqual({
+			editorNameAfterCreatingWithTheGroup,
+			rename,
+			recolor,
+			askedWithHeader,
+			withoutHeader: { editorName: shownTabStackEditorName(), inputs: quickInputService.inputOptions.length, picks: quickInputService.activeItems.length },
+			tabStack: { label: group.tabStacks[0].label, color: group.tabStacks[0].color }
+		}, {
+			editorNameAfterCreatingWithTheGroup: undefined,
+			rename: { name: 'Auth', focused: 'Name' },
+			recolor: { name: 'Auth', focused: 'Green' },
+			askedWithHeader: { inputs: 0, picks: 0 },
+			withoutHeader: { editorName: undefined, inputs: 1, picks: 1 },
+			tabStack: { label: 'Docs', color: 'red' }
 		});
 	});
 

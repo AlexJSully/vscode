@@ -46,7 +46,7 @@ import { DIFF_FOCUS_OTHER_SIDE, DIFF_FOCUS_PRIMARY_SIDE, DIFF_FOCUS_SECONDARY_SI
 import { IResolvedEditorCommandsContext, resolveCommandsContext, resolveTabStack, resolveTabStackEditors, resolveTabStackGroupedEditors } from './editorCommandsContext.js';
 import { getMoveTabIndex, getMoveTabsRunIndex, IEditorGroupView, prepareMoveCopyEditors } from './editor.js';
 import { IRange } from '../../../../editor/common/core/range.js';
-import { inputTabStackLabel, pickTabStack, pickTabStackColor } from './tabStackPickers.js';
+import { addEditorsToTabStackAndEditNew, changeTabStackColor, pickTabStack, renameTabStack } from './tabStackPickers.js';
 
 export const CLOSE_SAVED_EDITORS_COMMAND_ID = 'workbench.action.closeUnmodifiedEditors';
 export const CLOSE_EDITORS_IN_GROUP_COMMAND_ID = 'workbench.action.closeEditorsInGroup';
@@ -1694,7 +1694,9 @@ function registerTabStackCommands(): void {
 		}
 		run(accessor: ServicesAccessor, ...args: unknown[]): void {
 			const resolved = resolveTabStackEditors(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
-			resolved?.group.addEditorsToTabStack(resolved.editors);
+			if (resolved) {
+				addEditorsToTabStackAndEditNew(resolved.group as IEditorGroupView, resolved.editors);
+			}
 		}
 	});
 
@@ -1717,7 +1719,7 @@ function registerTabStackCommands(): void {
 
 			const pick = await pickTabStack(quickInputService, resolved.group.tabStacks);
 			if (pick) {
-				resolved.group.addEditorsToTabStack(resolved.editors, pick.tabStack);
+				addEditorsToTabStackAndEditNew(resolved.group as IEditorGroupView, resolved.editors, pick.tabStack);
 			}
 		}
 	});
@@ -1756,10 +1758,7 @@ function registerTabStackCommands(): void {
 				return;
 			}
 
-			const label = await inputTabStackLabel(quickInputService, resolved.tabStack.label);
-			if (label !== undefined) {
-				resolved.group.updateTabStack(resolved.tabStack.id, { label });
-			}
+			await renameTabStack(resolved.group as IEditorGroupView, resolved.tabStack, quickInputService);
 		}
 	});
 
@@ -1780,10 +1779,7 @@ function registerTabStackCommands(): void {
 				return;
 			}
 
-			const color = await pickTabStackColor(quickInputService, resolved.tabStack.color);
-			if (color) {
-				resolved.group.updateTabStack(resolved.tabStack.id, { color });
-			}
+			await changeTabStackColor(resolved.group as IEditorGroupView, resolved.tabStack, quickInputService);
 		}
 	});
 

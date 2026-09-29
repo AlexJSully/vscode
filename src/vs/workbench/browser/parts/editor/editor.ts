@@ -317,6 +317,12 @@ export interface IEditorGroupMenuIds {
 /**
  * A helper to access and mutate an editor group within an editor part.
  */
+/**
+ * What the name and color bubble of a tab stack focuses when it opens: the
+ * name of the tab stack, or its checked color.
+ */
+export type TabStackEditorFocus = 'name' | 'color';
+
 export interface IEditorGroupView extends IDisposable, ISerializableView, IEditorGroup {
 
 	readonly onDidFocus: Event<void>;
@@ -382,6 +388,16 @@ export interface IEditorGroupView extends IDisposable, ISerializableView, IEdito
 	 * all its editors.
 	 */
 	moveEditorsWithinGroup(editors: readonly EditorInput[], index: number, targetTabStack?: TabStackId | null): void;
+
+	/**
+	 * Opens the name and color bubble of a tab stack under its header in the
+	 * tab bar, scrolling the header into view first, with `focus` focused, the
+	 * name by default. Changes apply as they are made.
+	 *
+	 * @returns whether the bubble opened, which it only does while the tab bar
+	 * shows the header of the tab stack.
+	 */
+	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean;
 
 	relayout(): void;
 }

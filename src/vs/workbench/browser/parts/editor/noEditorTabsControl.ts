@@ -5,6 +5,8 @@
 
 import './media/singleeditortabscontrol.css';
 import { EditorInput } from '../../../common/editor/editorInput.js';
+import { TabStackId } from '../../../common/editor/editorGroupModel.js';
+import { TabStackEditorFocus } from './editor.js';
 import { EditorTabsControl } from './editorTabsControl.js';
 import { Dimension } from '../../../../base/browser/dom.js';
 import { IEditorTitleControlDimensions } from './editorTitleControl.js';
@@ -79,6 +81,10 @@ export class NoEditorTabsControl extends EditorTabsControl {
 	updateEditorSelections(): void { }
 
 	updateTabStacks(): void { }
+
+	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean {
+		return false;
+	}
 
 	updateEditorLabel(editor: EditorInput): void { }
 

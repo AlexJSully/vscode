@@ -117,7 +117,7 @@ import { IEnterWorkspaceResult, IRecent, IRecentlyOpened, IWorkspaceFolderCreati
 import { EditorPaneDescriptor, IEditorPaneRegistry } from '../../browser/editor.js';
 import { PaneComposite, PaneCompositeDescriptor, Extensions as PaneCompositeExtensions } from '../../browser/panecomposite.js';
 import { Part } from '../../browser/part.js';
-import { DEFAULT_EDITOR_PART_OPTIONS, EditorServiceImpl, IEditorGroupsView, IEditorGroupTitleHeight, IEditorGroupView } from '../../browser/parts/editor/editor.js';
+import { DEFAULT_EDITOR_PART_OPTIONS, EditorServiceImpl, IEditorGroupsView, IEditorGroupTitleHeight, IEditorGroupView, TabStackEditorFocus } from '../../browser/parts/editor/editor.js';
 import { EditorPane } from '../../browser/parts/editor/editorPane.js';
 import { MainEditorPart } from '../../browser/parts/editor/editorPart.js';
 import { EditorParts } from '../../browser/parts/editor/editorParts.js';
@@ -1018,6 +1018,7 @@ export class TestEditorGroupView implements IEditorGroupView {
 	updateTabStack(_tabStack: TabStackId, _update: ITabStackUpdate): void { }
 	moveTabStack(_tabStack: TabStackId, _index: number): void { }
 	moveEditorsWithinGroup(_editors: readonly EditorInput[], _index: number, _targetTabStack?: TabStackId | null): void { }
+	editTabStack(_tabStack: TabStackId, _focus?: TabStackEditorFocus): boolean { return false; }
 	lock(locked: boolean): void { }
 	focus(): void { }
 	get scopedContextKeyService(): IContextKeyService { throw new Error('not implemented'); }
@@ -1147,6 +1148,16 @@ export class TestWorkingCopyBackupService extends InMemoryWorkingCopyBackupServi
 
 		return super.resolve(identifier);
 	}
+}
+
+/**
+ * Returns the name and color bubble of a tab stack that the context view
+ * shows, or `undefined` when it shows none.
+ */
+export function getShownTabStackEditor(contextViewService: IContextViewService): HTMLElement | undefined {
+	const contextView = contextViewService.getContextViewElement();
+
+	return contextView.style.display !== 'none' ? contextView.querySelector<HTMLElement>('.tab-stack-editor') ?? undefined : undefined;
 }
 
 export function toUntypedWorkingCopyId(resource: URI): IWorkingCopyIdentifier {
