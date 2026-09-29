@@ -22,20 +22,20 @@ import { IMenuService, MenuId } from '../../../../platform/actions/common/action
 import { EditorCommandsContextActionRunner, EditorTabsControl } from './editorTabsControl.js';
 import { clearConnectedTabClipping, IConnectedTabBounds, updateConnectedTabClipping } from './connectedTabClipping.js';
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
-import { IDisposable, dispose, DisposableStore, combinedDisposable, MutableDisposable, toDisposable } from '../../../../base/common/lifecycle.js';
+import { IDisposable, dispose, DisposableStore, combinedDisposable, MutableDisposable, toDisposable, DisposableMap } from '../../../../base/common/lifecycle.js';
 import { ScrollableElement } from '../../../../base/browser/ui/scrollbar/scrollableElement.js';
 import { ScrollbarVisibility } from '../../../../base/common/scrollable.js';
 import { getOrSet, LRUCache } from '../../../../base/common/map.js';
 import { IThemeService, registerThemingParticipant } from '../../../../platform/theme/common/themeService.js';
-import { TAB_INACTIVE_BACKGROUND, TAB_ACTIVE_BACKGROUND, TAB_BORDER, EDITOR_DRAG_AND_DROP_BACKGROUND, TAB_UNFOCUSED_ACTIVE_BACKGROUND, TAB_UNFOCUSED_ACTIVE_BORDER, TAB_ACTIVE_BORDER, TAB_HOVER_BACKGROUND, TAB_HOVER_BORDER, TAB_UNFOCUSED_HOVER_BACKGROUND, TAB_UNFOCUSED_HOVER_BORDER, EDITOR_GROUP_HEADER_TABS_BACKGROUND, WORKBENCH_BACKGROUND, TAB_ACTIVE_BORDER_TOP, TAB_UNFOCUSED_ACTIVE_BORDER_TOP, TAB_ACTIVE_MODIFIED_BORDER, TAB_INACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_ACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_INACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_INACTIVE_BACKGROUND, TAB_HOVER_FOREGROUND, TAB_UNFOCUSED_HOVER_FOREGROUND, EDITOR_GROUP_HEADER_TABS_BORDER, TAB_LAST_PINNED_BORDER, TAB_SELECTED_BORDER_TOP } from '../../../common/theme.js';
-import { activeContrastBorder, contrastBorder, editorBackground } from '../../../../platform/theme/common/colorRegistry.js';
+import { TAB_INACTIVE_BACKGROUND, TAB_ACTIVE_BACKGROUND, TAB_BORDER, EDITOR_DRAG_AND_DROP_BACKGROUND, TAB_UNFOCUSED_ACTIVE_BACKGROUND, TAB_UNFOCUSED_ACTIVE_BORDER, TAB_ACTIVE_BORDER, TAB_HOVER_BACKGROUND, TAB_HOVER_BORDER, TAB_UNFOCUSED_HOVER_BACKGROUND, TAB_UNFOCUSED_HOVER_BORDER, EDITOR_GROUP_HEADER_TABS_BACKGROUND, WORKBENCH_BACKGROUND, TAB_ACTIVE_BORDER_TOP, TAB_UNFOCUSED_ACTIVE_BORDER_TOP, TAB_ACTIVE_MODIFIED_BORDER, TAB_INACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_ACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_INACTIVE_MODIFIED_BORDER, TAB_UNFOCUSED_INACTIVE_BACKGROUND, TAB_HOVER_FOREGROUND, TAB_UNFOCUSED_HOVER_FOREGROUND, EDITOR_GROUP_HEADER_TABS_BORDER, TAB_LAST_PINNED_BORDER, TAB_SELECTED_BORDER_TOP, TAB_STACK_COLOR_IDS } from '../../../common/theme.js';
+import { activeContrastBorder, asCssVariable, contrastBorder, editorBackground } from '../../../../platform/theme/common/colorRegistry.js';
 import { ResourcesDropHandler, DraggedEditorIdentifier, DraggedEditorGroupIdentifier, extractTreeDropData, isWindowDraggedOver } from '../../dnd.js';
 import { Color } from '../../../../base/common/color.js';
 import { INotificationService } from '../../../../platform/notification/common/notification.js';
 import { MergeGroupMode, IMergeGroupOptions } from '../../../services/editor/common/editorGroupsService.js';
 import { addDisposableListener, EventType, EventHelper, Dimension, scheduleAtNextAnimationFrame, findParentWithClass, clearNode, DragAndDropObserver, isMouseEvent, getWindow, ModifierKeyEmitter, $, isHTMLElement } from '../../../../base/browser/dom.js';
 import { localize } from '../../../../nls.js';
-import { CONNECTED_EDITOR_TABS_SELECTOR, IEditorGroupMenuIds, IEditorGroupsView, EditorServiceImpl, IEditorGroupView, IInternalEditorOpenOptions, IEditorPartsView, prepareMoveCopyEditors } from './editor.js';
+import { CONNECTED_EDITOR_TABS_SELECTOR, IEditorGroupMenuIds, IEditorGroupsView, EditorServiceImpl, IEditorGroupView, IInternalEditorOpenOptions, IEditorPartsView, prepareMoveCopyEditors, isTabStacksEnabled, EditorTabStackContextMenuId } from './editor.js';
 import { CloseEditorTabAction, CloseOtherEditorTabsInGroupAction, UnpinEditorAction } from './editorActions.js';
 import { assertReturnsAllDefined, assertReturnsDefined } from '../../../../base/common/types.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
@@ -55,11 +55,14 @@ import { DraggedTreeItemsIdentifier } from '../../../../editor/common/services/t
 import { IEditorResolverService } from '../../../services/editor/common/editorResolverService.js';
 import { IEditorTitleControlDimensions } from './editorTitleControl.js';
 import { StickyEditorGroupModel, UnstickyEditorGroupModel } from '../../../common/editor/filteredEditorGroupModel.js';
-import { IReadonlyEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
+import { IReadonlyEditorGroupModel, ITabStack, isTabStackPresetColor, TabStackColor, TabStackId } from '../../../common/editor/editorGroupModel.js';
 import { IHostService } from '../../../services/host/browser/host.js';
 import { BugIndicatingError } from '../../../../base/common/errors.js';
 import { applyDragImage } from '../../../../base/browser/ui/dnd/dnd.js';
 import { nextCharLength } from '../../../../base/common/strings.js';
+import { IHoverService } from '../../../../platform/hover/browser/hover.js';
+import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
+import { ActionRunner } from '../../../../base/common/actions.js';
 
 interface IEditorInputLabel {
 	readonly editor: EditorInput;
@@ -87,6 +90,20 @@ interface IScheduledMultiEditorTabsControlLayout extends IDisposable {
 	 * Associated options with the layout call.
 	 */
 	options?: IMultiEditorTabsControlLayoutOptions;
+}
+
+interface ITabStackHeader extends IDisposable {
+
+	/**
+	 * The header element in the tabs container, placed before the first tab
+	 * of its tab stack.
+	 */
+	readonly element: HTMLElement;
+
+	/**
+	 * The element showing the name of the tab stack.
+	 */
+	readonly label: HTMLElement;
 }
 
 export class MultiEditorTabsControl extends EditorTabsControl {
@@ -137,6 +154,12 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 	private tabActionBars: ActionBar[] = [];
 	private tabDisposables: IDisposable[] = [];
 
+	// The tab of each editor by index. Tabs of collapsed tab stacks are kept
+	// here while detached from the tabs container, which also holds headers.
+	private readonly tabs: HTMLElement[] = [];
+	private readonly tabStackHeaders = this._register(new DisposableMap<TabStackId, ITabStackHeader>());
+	private readonly tabStackHeaderMenuActionRunner = this._register(new ActionRunner());
+
 	private dimensions: IEditorTitleControlDimensions & { used?: Dimension } = {
 		container: Dimension.None,
 		available: Dimension.None
@@ -172,6 +195,7 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		@IEditorResolverService editorResolverService: IEditorResolverService,
 		@IHostService hostService: IHostService,
 		@IMenuService menuService: IMenuService,
+		@IHoverService private readonly hoverService: IHoverService,
 	) {
 		super(parent, editorPartsView, groupsView, groupView, tabsModel, menuIds, breadcrumbsInHeader, useModernUITabs, contextMenuService, instantiationService, contextKeyService, keybindingService, notificationService, quickInputService, themeService, editorResolverService, hostService, menuService);
 
@@ -182,6 +206,17 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 
 		// React to decorations changing for our resource labels
 		this._register(this.tabResourceLabels.onDidChangeDecorations(() => this.doHandleDecorationsChange()));
+
+		// Block the next reveal of the active tab when an action of the menu of a
+		// tab stack header runs, so that an action that changes the tab stack
+		// keeps the header in view. An action that ends without a layout, such as
+		// one whose input was cancelled, lifts the block again
+		this._register(this.tabStackHeaderMenuActionRunner.onWillRun(() => this.blockRevealActiveTabOnce()));
+		this._register(this.tabStackHeaderMenuActionRunner.onDidRun(() => {
+			if (!this.layoutScheduler.value) {
+				this.blockRevealActiveTab = false;
+			}
+		}));
 
 		// React to Alt being held/released to swap in the "Close Others" tab action
 		// for the currently hovered tab only (if any).
@@ -302,11 +337,12 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 	}
 
 	private get tabCount(): number {
-		const tabsContainer = assertReturnsDefined(this.tabsContainer);
-		return this.addTabContainer ? tabsContainer.children.length - 1 : tabsContainer.children.length;
+		return this.tabs.length;
 	}
 
 	private appendTab(tab: HTMLElement, tabsContainer: HTMLElement): void {
+		this.tabs.push(tab);
+
 		if (this.addTabContainer) {
 			tabsContainer.insertBefore(tab, this.addTabContainer);
 		} else {
@@ -314,12 +350,8 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		}
 	}
 
-	private removeLastTab(tabsContainer: HTMLElement): void {
-		if (this.addTabContainer) {
-			this.addTabContainer.previousElementSibling?.remove();
-		} else {
-			tabsContainer.lastChild?.remove();
-		}
+	private removeLastTab(): void {
+		this.tabs.pop()?.remove();
 	}
 
 	private createTabsScrollbar(scrollable: HTMLElement): ScrollableElement {
@@ -383,14 +415,31 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 	}
 
 	private updateTabsFixedWidth(fixed: boolean): void {
+		let shownTabWidth: string | undefined;
+		const hiddenTabs: HTMLElement[] = [];
 		this.forEachTab((editor, tabIndex, tabContainer) => {
-			if (fixed) {
+			if (fixed && this.isTabShown(tabContainer)) {
 				const { width } = tabContainer.getBoundingClientRect();
 				tabContainer.style.setProperty('--tab-sizing-current-width', `${width}px`);
+				if (!this.tabsModel.isSticky(editor)) {
+					shownTabWidth = `${width}px`;
+				}
+			} else if (fixed) {
+				hiddenTabs.push(tabContainer);
 			} else {
 				tabContainer.style.removeProperty('--tab-sizing-current-width');
 			}
 		});
+
+		// A tab of a collapsed tab stack has no width to measure. Closing a tab
+		// can show it in place of a shown tab, so it takes the width of those
+		for (const tab of hiddenTabs) {
+			if (shownTabWidth) {
+				tab.style.setProperty('--tab-sizing-current-width', shownTabWidth);
+			} else {
+				tab.style.removeProperty('--tab-sizing-current-width');
+			}
+		}
 	}
 
 	private getTabsScrollbarSizing(): number {
@@ -618,7 +667,13 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			});
 		};
 
-		this._register(addDisposableListener(tabsContainer, TouchEventType.Contextmenu, e => showContextMenu(e)));
+		this._register(addDisposableListener(tabsContainer, TouchEventType.Contextmenu, (e: GestureEvent) => {
+			if (isHTMLElement(e.initialTarget) && findParentWithClass(e.initialTarget, 'tab-stack-header', tabsContainer)) {
+				return; // a tab stack header shows its own context menu, and gestures reach every target containing them
+			}
+
+			showContextMenu(e);
+		}));
 		this._register(addDisposableListener(tabsContainer, EventType.CONTEXT_MENU, e => showContextMenu(e)));
 	}
 
@@ -751,11 +806,10 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		if (this.tabsModel.count) {
 
 			// Remove tabs that got closed
-			const tabsContainer = assertReturnsDefined(this.tabsContainer);
 			while (this.tabCount > this.tabsModel.count) {
 
 				// Remove one tab from container (must be the last to keep indexes in order!)
-				this.removeLastTab(tabsContainer);
+				this.removeLastTab();
 
 				// Remove associated tab label and widget
 				dispose(this.tabDisposables.pop());
@@ -777,6 +831,8 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 				}
 			}
 
+			this.tabs.length = 0;
+			this.tabStackHeaders.clearAndDisposeAll();
 			this.tabDisposables = dispose(this.tabDisposables);
 			this.tabResourceLabels.clear();
 			this.tabLabels = [];
@@ -802,6 +858,9 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			Math.min(fromTabIndex, targetTabIndex), // from: smallest of fromTabIndex/targetTabIndex
 			Math.max(fromTabIndex, targetTabIndex)	//   to: largest of fromTabIndex/targetTabIndex
 		);
+
+		// Moving an editor can move tab stack headers
+		this.reconcileTabStackSlots();
 
 		// Moving an editor requires a layout to keep the active editor visible
 		this.layout(this.dimensions, { forceRevealActiveTab: true });
@@ -830,6 +889,9 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			this.redrawTabBorders(tabIndex, tabContainer);
 		});
 
+		// Sticking an editor removes it from its tab stack
+		this.reconcileTabStackSlots();
+
 		// A change to the sticky state requires a layout to keep the active editor visible
 		this.layout(this.dimensions, { forceRevealActiveTab: true });
 	}
@@ -853,7 +915,21 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		this.invalidateConnectedTabLayout();
 	}
 
-	updateTabStacks(): void { }
+	updateTabStacks(): void {
+		if (this.tabs.length !== this.tabsModel.count) {
+			return; // an open or close of a tab is pending, which redraws all tabs once done
+		}
+
+		this.forEachTab((editor, tabIndex, tabContainer, tabLabelWidget, tabLabel) => {
+			this.redrawTabStackMembership(editor, tabContainer);
+			this.redrawTabAriaLabel(editor, tabContainer, tabLabel);
+		});
+
+		this.reconcileTabStackSlots();
+
+		// Showing or hiding tabs requires a layout to keep the active editor visible
+		this.layout(this.dimensions, { forceRevealActiveTab: true });
+	}
 
 	private invalidateConnectedTabLayout(): void {
 		if (this.connectedTabBounds || this.parent.closest(CONNECTED_EDITOR_TABS_SELECTOR)) {
@@ -943,6 +1019,7 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			oldOptions.highlightModifiedTabs !== newOptions.highlightModifiedTabs ||
 			oldOptions.wrapTabs !== newOptions.wrapTabs ||
 			oldOptions.showTabIndex !== newOptions.showTabIndex ||
+			oldOptions.enableTabStacks !== newOptions.enableTabStacks ||
 			!equals(oldOptions.decorations, newOptions.decorations)
 		) {
 			this.redraw();
@@ -972,8 +1049,7 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 	}
 
 	private doWithTab(tabIndex: number, editor: EditorInput, fn: (editor: EditorInput, tabIndex: number, tabContainer: HTMLElement, tabLabelWidget: IResourceLabel, tabLabel: IEditorInputLabel, tabActionBar: ActionBar) => void): void {
-		const tabsContainer = assertReturnsDefined(this.tabsContainer);
-		const tabContainer = tabsContainer.children[tabIndex] as HTMLElement;
+		const tabContainer = this.tabs[tabIndex];
 		const tabResourceLabel = this.tabResourceLabels.get(tabIndex);
 		const tabLabel = this.tabLabels[tabIndex];
 		const tabActionBar = this.tabActionBars[tabIndex];
@@ -1526,7 +1602,7 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 
 		const editorsToSelect = this.groupView.getEditors(EditorsOrder.SEQUENTIAL).slice(fromEditorIndex, toEditorIndex + 1);
 		for (const editor of editorsToSelect) {
-			if (!this.groupView.isSelected(editor)) {
+			if (!this.groupView.isSelected(editor) && !this.groupView.getTabStack(editor)?.collapsed) {
 				selection.push(editor);
 			}
 		}
@@ -1711,6 +1787,9 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			this.redrawTab(editor, tabIndex, tabContainer, tabLabelWidget, tabLabel, tabActionBar);
 		});
 
+		// Tab stack headers and collapsed tab stacks
+		this.reconcileTabStackSlots();
+
 		// Update Editor Actions Toolbar
 		this.updateEditorActionsToolbar();
 
@@ -1782,6 +1861,8 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			tabContainer.classList.toggle(`sticky-${option}`, isTabSticky && options.pinnedTabSizing === option);
 		}
 
+		this.redrawTabStackMembership(editor, tabContainer);
+
 		// If not wrapping tabs, sticky compact/shrink tabs need a position to remain at their location
 		// when scrolling to stay in view (requirement for position: sticky)
 		if (!options.wrapTabs && isTabSticky && options.pinnedTabSizing !== 'normal') {
@@ -1821,12 +1902,7 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			description = tabLabel.description || '';
 		}
 
-		if (tabLabel.ariaLabel) {
-			tabContainer.setAttribute('aria-label', tabLabel.ariaLabel);
-			// Set aria-description to empty string so that screen readers would not read the title as well
-			// More details https://github.com/microsoft/vscode/issues/95378
-			tabContainer.setAttribute('aria-description', '');
-		}
+		this.redrawTabAriaLabel(editor, tabContainer, tabLabel);
 
 		// Label
 		const resource = EditorResourceAccessor.getOriginalUri(editor, { supportSideBySide: SideBySideEditor.PRIMARY });
@@ -1956,6 +2032,344 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		tabContainer.style.borderRight = borderRightColor ? `1px solid ${borderRightColor}` : '';
 		tabContainer.style.outlineColor = this.getColor(activeContrastBorder) || '';
 	}
+
+	//#region Tab Stacks
+
+	/**
+	 * Returns the tab stack of the editor when tab stacks are shown.
+	 */
+	private getShownTabStack(editor: EditorInput): ITabStack | undefined {
+		return isTabStacksEnabled(this.groupsView.partOptions) ? this.tabsModel.getTabStack(editor) : undefined;
+	}
+
+	private findTabStack(tabStackId: TabStackId): ITabStack | undefined {
+		return this.groupView.tabStacks.find(tabStack => tabStack.id === tabStackId);
+	}
+
+	private redrawTabStackMembership(editor: EditorInput, tabContainer: HTMLElement): void {
+		const tabStack = this.getShownTabStack(editor);
+
+		// Only the tabs of a tab stack have an indicator. It is appended after the
+		// children that a tab is created with, so it is the last child of the tab
+		const indicator = tabContainer.lastElementChild?.classList.contains('tab-stack-indicator') ? tabContainer.lastElementChild : undefined;
+
+		tabContainer.classList.toggle('tab-stack-member', !!tabStack);
+		if (tabStack) {
+			tabContainer.style.setProperty('--tab-stack-color', this.getTabStackColorValue(tabStack.color));
+			if (!indicator) {
+				tabContainer.appendChild($('.tab-stack-indicator', { 'aria-hidden': true }));
+			}
+		} else {
+			tabContainer.style.removeProperty('--tab-stack-color');
+			indicator?.remove();
+		}
+	}
+
+	private redrawTabAriaLabel(editor: EditorInput, tabContainer: HTMLElement, tabLabel: IEditorInputLabel): void {
+		if (!tabLabel.ariaLabel) {
+			return;
+		}
+
+		// The tab stack is looked up by editor because the index of a tab is
+		// relative to the tabs of this tab bar, not to the editors of the group
+		let ariaLabel = tabLabel.ariaLabel;
+		const tabStack = this.getShownTabStack(editor);
+		if (tabStack) {
+			ariaLabel = tabStack.label
+				? localize('tabStackMemberAriaLabel', "{0}, in tab stack {1}", ariaLabel, tabStack.label)
+				: localize('unnamedTabStackMemberAriaLabel', "{0}, in unnamed tab stack", ariaLabel);
+		}
+
+		tabContainer.setAttribute('aria-label', ariaLabel);
+		// Set aria-description to empty string so that screen readers would not read the title as well
+		// More details https://github.com/microsoft/vscode/issues/95378
+		tabContainer.setAttribute('aria-description', '');
+	}
+
+	/**
+	 * Puts the tabs and tab stack headers into the tabs container in the order
+	 * of the editors: a header before the first tab of each tab stack, then its
+	 * tabs unless the tab stack is collapsed. The tabs of a collapsed tab stack
+	 * are detached rather than hidden, so that sibling and position based code
+	 * and CSS only see what is shown. When no tab stack is shown, a tabs
+	 * container that already holds only the tabs in the order of the editors is
+	 * left unchanged; otherwise stale headers are removed and detached tabs are
+	 * put back.
+	 */
+	private reconcileTabStackSlots(): void {
+		const tabsContainer = this.tabsContainer;
+		if (!tabsContainer || this.tabs.length !== this.tabsModel.count) {
+			return; // an open or close of a tab is pending, which redraws all tabs once done
+		}
+
+		// While editors of a tab stack move one after the other they can be
+		// apart, so only the first editor of a tab stack gets its header
+		const showTabStacks = isTabStacksEnabled(this.groupsView.partOptions);
+		const shownTabStacks = new Set<TabStackId>();
+		const slots: HTMLElement[] = [];
+		this.tabsModel.getEditors(EditorsOrder.SEQUENTIAL).forEach((editor, tabIndex) => {
+			const tabStack = showTabStacks ? this.tabsModel.getTabStack(editor) : undefined;
+			if (tabStack && !shownTabStacks.has(tabStack.id)) {
+				shownTabStacks.add(tabStack.id);
+				slots.push(this.getTabStackHeader(tabStack));
+			}
+
+			if (!tabStack?.collapsed) {
+				slots.push(this.tabs[tabIndex]);
+			}
+		});
+
+		for (const tabStackId of Array.from(this.tabStackHeaders.keys())) {
+			if (!shownTabStacks.has(tabStackId)) {
+				this.tabStackHeaders.deleteAndDispose(tabStackId);
+			}
+		}
+
+		// Move children into place, keeping the Add Tab control last
+		const shownSlots = new Set<Element>(slots);
+		let child = tabsContainer.firstElementChild;
+		for (const slot of slots) {
+			child = this.detachUnshownSlots(child, shownSlots);
+			if (slot === child) {
+				child = child.nextElementSibling;
+			} else {
+				tabsContainer.insertBefore(slot, child);
+			}
+		}
+
+		this.detachUnshownSlots(child, shownSlots);
+	}
+
+	/**
+	 * Detaches the children from `child` on that are not shown, up to the
+	 * next shown one or the Add Tab control, and returns that child.
+	 */
+	private detachUnshownSlots(child: Element | null, shownSlots: ReadonlySet<Element>): Element | null {
+		while (child && child !== this.addTabContainer && !shownSlots.has(child)) {
+			const nextChild = child.nextElementSibling;
+
+			// The wrapping layout only updates this class on attached tabs
+			child.classList.remove('last-in-row');
+			child.remove();
+
+			child = nextChild;
+		}
+
+		return child;
+	}
+
+	private getTabStackHeader(tabStack: ITabStack): HTMLElement {
+		let header = this.tabStackHeaders.get(tabStack.id);
+		if (!header) {
+			header = this.createTabStackHeader(tabStack.id, assertReturnsDefined(this.tabsScrollbar));
+			this.tabStackHeaders.set(tabStack.id, header);
+		}
+
+		this.redrawTabStackHeader(header, tabStack);
+
+		return header.element;
+	}
+
+	private createTabStackHeader(tabStackId: TabStackId, tabsScrollbar: ScrollableElement): ITabStackHeader {
+		const label = $('span.tab-stack-header-label');
+		const element = $('.tab-stack-header', { role: 'tab', 'aria-selected': 'false', tabindex: '-1' }, $('.tab-stack-header-chip', undefined, label));
+		const listeners = this.registerTabStackHeaderListeners(element, tabStackId, tabsScrollbar);
+
+		return {
+			element,
+			label,
+			dispose: () => {
+				listeners.dispose();
+				element.remove();
+			}
+		};
+	}
+
+	/**
+	 * Registers the hover and the mouse, touch and keyboard input of a tab
+	 * stack header, which look up the tab stack by its id whenever they run.
+	 */
+	private registerTabStackHeaderListeners(element: HTMLElement, tabStackId: TabStackId, tabsScrollbar: ScrollableElement): IDisposable {
+		const disposables = new DisposableStore();
+
+		disposables.add(Gesture.addTarget(element));
+		disposables.add(this.hoverService.setupManagedHover(getDefaultHoverDelegate('mouse'), element, () => {
+			const tabStack = this.findTabStack(tabStackId);
+
+			return tabStack ? this.getTabStackHeaderHover(tabStack) : undefined;
+		}));
+
+		// Toggle on click rather than on mouse down, which also starts a drag
+		disposables.add(addDisposableListener(element, EventType.CLICK, e => {
+			// Right clicks, and Ctrl+click on macOS, open the context menu instead
+			if (e.button !== 0 || (isMacintosh && e.ctrlKey)) {
+				return;
+			}
+
+			EventHelper.stop(e);
+			this.toggleTabStack(tabStackId);
+		}));
+		disposables.add(addDisposableListener(element, TouchEventType.Tap, (e: GestureEvent) => {
+			EventHelper.stop(e);
+			this.toggleTabStack(tabStackId);
+		}));
+
+		// Keep double clicks on a header from reaching the tabs container and the group
+		disposables.add(addDisposableListener(element, EventType.DBLCLICK, e => EventHelper.stop(e, true)));
+
+		// Touch Scroll Support
+		disposables.add(addDisposableListener(element, TouchEventType.Change, (e: GestureEvent) => {
+			tabsScrollbar.setScrollPosition({ scrollLeft: tabsScrollbar.getScrollPosition().scrollLeft - e.translationX });
+		}));
+
+		// Keyboard accessibility
+		disposables.add(addDisposableListener(element, EventType.KEY_UP, e => {
+			const event = new StandardKeyboardEvent(e);
+			if (event.equals(KeyCode.Enter) || event.equals(KeyCode.Space)) {
+				EventHelper.stop(e, true);
+				this.toggleTabStack(tabStackId);
+			}
+		}));
+
+		// Context menu on Shift+F10, touch context menu gesture and right click
+		disposables.add(addDisposableListener(element, EventType.KEY_DOWN, e => {
+			const event = new StandardKeyboardEvent(e);
+			if (event.shiftKey && event.keyCode === KeyCode.F10) {
+				EventHelper.stop(e, true);
+				this.onTabStackHeaderContextMenu(tabStackId, e, element);
+			}
+		}));
+		disposables.add(addDisposableListener(element, TouchEventType.Contextmenu, (e: GestureEvent) => {
+			EventHelper.stop(e);
+			this.onTabStackHeaderContextMenu(tabStackId, e, element);
+		}));
+
+		// Stopping propagation keeps the tabs container from showing its context menu too
+		disposables.add(addDisposableListener(element, EventType.CONTEXT_MENU, e => {
+			EventHelper.stop(e, true);
+			this.onTabStackHeaderContextMenu(tabStackId, e, element);
+		}));
+
+		return disposables;
+	}
+
+	private redrawTabStackHeader(header: ITabStackHeader, tabStack: ITabStack): void {
+		const { element, label } = header;
+
+		element.classList.toggle('collapsed', tabStack.collapsed);
+		element.classList.toggle('unnamed', !tabStack.label);
+		element.setAttribute('aria-expanded', String(!tabStack.collapsed));
+		element.setAttribute('aria-label', this.getTabStackHeaderAriaLabel(tabStack));
+		label.textContent = tabStack.label;
+
+		element.style.setProperty('--tab-stack-color', this.getTabStackColorValue(tabStack.color));
+		const foreground = this.getTabStackForeground(tabStack.color);
+		if (foreground) {
+			element.style.setProperty('--tab-stack-foreground', foreground);
+		} else {
+			element.style.removeProperty('--tab-stack-foreground');
+		}
+	}
+
+	private getTabStackHeaderAriaLabel(tabStack: ITabStack): string {
+		const count = tabStack.editors.length;
+		if (tabStack.label) {
+			return count === 1
+				? localize('tabStackHeaderAriaLabelOneEditor', "tab stack {0}, 1 editor", tabStack.label)
+				: localize('tabStackHeaderAriaLabel', "tab stack {0}, {1} editors", tabStack.label, count);
+		}
+
+		return count === 1
+			? localize('unnamedTabStackHeaderAriaLabelOneEditor', "unnamed tab stack, 1 editor")
+			: localize('unnamedTabStackHeaderAriaLabel', "unnamed tab stack, {0} editors", count);
+	}
+
+	/**
+	 * Returns the hover of a tab stack header, which names the tab stack like
+	 * its chip does and tells how many editors it has.
+	 */
+	private getTabStackHeaderHover(tabStack: ITabStack): string {
+		const count = tabStack.editors.length;
+		if (tabStack.label) {
+			return count === 1
+				? localize('tabStackHeaderHoverOneEditor', "{0} (1 editor)", tabStack.label)
+				: localize('tabStackHeaderHover', "{0} ({1} editors)", tabStack.label, count);
+		}
+
+		return count === 1
+			? localize('unnamedTabStackHeaderHoverOneEditor', "Unnamed tab stack (1 editor)")
+			: localize('unnamedTabStackHeaderHover', "Unnamed tab stack ({0} editors)", count);
+	}
+
+	/**
+	 * Returns the CSS value of a tab stack color: the variable of the theme
+	 * color of a preset, or the hex value of a custom color.
+	 */
+	private getTabStackColorValue(color: TabStackColor): string {
+		return isTabStackPresetColor(color) ? asCssVariable(TAB_STACK_COLOR_IDS[color]) : color;
+	}
+
+	/**
+	 * Returns black or white, whichever contrasts more with the tab stack
+	 * color shown over the tabs background, or `undefined` when the theme has
+	 * no value for a preset color. No single theme color contrasts with every
+	 * tab stack color, least of all with custom colors.
+	 */
+	private getTabStackForeground(color: TabStackColor): string | undefined {
+		const tabStackColor = isTabStackPresetColor(color) ? this.theme.getColor(TAB_STACK_COLOR_IDS[color]) : Color.fromHex(color);
+		if (!tabStackColor) {
+			return undefined;
+		}
+
+		const tabsBackground = this.theme.getColor(EDITOR_GROUP_HEADER_TABS_BACKGROUND);
+		const background = tabsBackground ? tabStackColor.makeOpaque(tabsBackground) : tabStackColor;
+
+		return (background.getContrastRatio(Color.black) >= background.getContrastRatio(Color.white) ? Color.black : Color.white).toString();
+	}
+
+	private toggleTabStack(tabStackId: TabStackId): void {
+		const tabStack = this.findTabStack(tabStackId);
+		if (!tabStack) {
+			return;
+		}
+
+		// Keep the header where it is unless collapsing makes another editor
+		// active, which is then revealed
+		const collapsesActiveEditor = !tabStack.collapsed && tabStack.editors.some(editor => this.tabsModel.isActive(editor));
+		if (!collapsesActiveEditor) {
+			this.blockRevealActiveTabOnce();
+		}
+
+		this.groupView.updateTabStack(tabStackId, { collapsed: !tabStack.collapsed });
+	}
+
+	private onTabStackHeaderContextMenu(tabStackId: TabStackId, e: Event, header: HTMLElement): void {
+		const tabStack = this.findTabStack(tabStackId);
+		if (!tabStack) {
+			return;
+		}
+
+		// Find target anchor
+		let anchor: HTMLElement | StandardMouseEvent = header;
+		if (isMouseEvent(e)) {
+			anchor = new StandardMouseEvent(getWindow(header), e);
+		}
+
+		// Commands of the menu find the tab stack by its first editor
+		const firstEditor = tabStack.editors[0];
+		this.contextMenuService.showContextMenu({
+			getAnchor: () => anchor,
+			menuId: EditorTabStackContextMenuId,
+			contextKeyService: this.contextKeyService,
+			menuActionOptions: { shouldForwardArgs: true },
+			getActionsContext: () => ({ groupId: this.groupView.id, editorIndex: this.groupView.getIndexOfEditor(firstEditor) }),
+			getKeyBinding: action => this.getKeybinding(action),
+			actionRunner: this.tabStackHeaderMenuActionRunner,
+			onHide: () => this.groupsView.activeGroup.focus() // restore focus to active group
+		});
+	}
+
+	//#endregion
 
 	protected override prepareEditorActions(editorActions: IToolbarActions): IToolbarActions {
 		const isGroupActive = this.groupsView.activeGroup === this.groupView;
@@ -2094,14 +2508,18 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 				tabsWrapMultiLine = remeasuredTabsWrapMultiLine;
 			}
 		}
-		const top = this.getTabAtIndex(0)?.offsetTop;
-		const bottom = this.getLastTab()?.offsetTop;
+		const top = this.getFirstShownSlot()?.offsetTop;
+		const bottom = this.getLastShownSlot()?.offsetTop;
 		const firstVisibleTabBar = Array.from(this.parent.children)
 			.filter(isHTMLElement)
 			.find(element => element.classList.contains('tabs-and-actions-container') && !element.classList.contains('empty'));
 		const topTabBar = firstVisibleTabBar === this.tabsAndActionsContainer;
 		const upperTabBar = this.parent.classList.contains('two-tab-bars') && topTabBar;
 		this.forEachTab((_editor, _index, tab) => {
+			if (!this.isTabShown(tab)) {
+				return; // a tab of a collapsed tab stack has no row
+			}
+
 			tab.classList.toggle('connected-tab-upper-row', connected && (upperTabBar || tab.offsetTop !== bottom));
 			tab.classList.toggle('connected-tab-top-row', connected && topTabBar && tab.offsetTop === top);
 		});
@@ -2110,6 +2528,9 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		} else {
 			assertReturnsDefined(this.stickyTabsBackground).style.width = '0px';
 			this.clearConnectedTabClipping();
+
+			// Wrapped tabs do not scroll, so there is no reveal of the active tab to block
+			this.blockRevealActiveTab = false;
 		}
 	}
 
@@ -2124,6 +2545,9 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 				tab.style.removeProperty('--connected-tab-min-width');
 				tab.style.removeProperty('--connected-tab-min-name-width');
 				return;
+			}
+			if (!this.isTabShown(tab)) {
+				return; // a tab of a collapsed tab stack has no computed style to measure
 			}
 			const label = tabLabelWidget.element;
 			// IconLabel owns these private nodes; use their rendered fonts for text measurement.
@@ -2214,12 +2638,12 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			const visibleTabsWidth = tabsContainer.offsetWidth;
 			const allTabsWidth = tabsContainer.scrollWidth;
 			const lastTabFitsWrapped = () => {
-				const lastTab = this.getLastTab();
-				if (!lastTab) {
-					return true; // no tab always fits
+				const lastSlot = this.getLastShownSlot();
+				if (!lastSlot) {
+					return true; // no tab or tab stack header always fits
 				}
 
-				const lastTabOverlapWithToolbarWidth = lastTab.offsetWidth + editorToolbarWidth() - dimensions.available.width;
+				const lastTabOverlapWithToolbarWidth = lastSlot.offsetWidth + editorToolbarWidth() - dimensions.available.width;
 				if (lastTabOverlapWithToolbarWidth > 1) {
 					// Allow for slight rounding errors related to zooming here
 					// https://github.com/microsoft/vscode/issues/116385
@@ -2548,17 +2972,34 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 	}
 
 	private getTabAtIndex(tabIndex: number): HTMLElement | undefined {
-		if (tabIndex >= 0) {
-			const tabsContainer = assertReturnsDefined(this.tabsContainer);
-
-			return tabsContainer.children[tabIndex] as HTMLElement | undefined;
-		}
-
-		return undefined;
+		return tabIndex >= 0 ? this.tabs[tabIndex] : undefined;
 	}
 
-	private getLastTab(): HTMLElement | undefined {
-		return this.getTabAtIndex(this.tabsModel.count - 1);
+	/**
+	 * Returns the first tab or tab stack header in the tabs container.
+	 */
+	private getFirstShownSlot(): HTMLElement | undefined {
+		const firstSlot = this.tabsContainer?.firstElementChild;
+
+		return isHTMLElement(firstSlot) && firstSlot !== this.addTabContainer ? firstSlot : undefined;
+	}
+
+	/**
+	 * Returns the last tab or tab stack header in the tabs container, which
+	 * is not the last tab when the last tab stack is collapsed.
+	 */
+	private getLastShownSlot(): HTMLElement | undefined {
+		const lastSlot = this.addTabContainer ? this.addTabContainer.previousElementSibling : this.tabsContainer?.lastElementChild;
+
+		return isHTMLElement(lastSlot) ? lastSlot : undefined;
+	}
+
+	/**
+	 * Returns whether the tab is in the tabs container. The tabs of a
+	 * collapsed tab stack are detached from it.
+	 */
+	private isTabShown(tab: HTMLElement): boolean {
+		return tab.parentElement === this.tabsContainer;
 	}
 
 	private blockRevealActiveTabOnce(): void {
@@ -2691,7 +3132,7 @@ registerThemingParticipant((theme, collector) => {
 	const borderColor = theme.getColor(TAB_BORDER);
 	if (borderColor) {
 		collector.addRule(`
-			.monaco-workbench .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.wrapping .tabs-container > .tab {
+			.monaco-workbench .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.wrapping .tabs-container > :is(.tab, .tab-stack-header) {
 				border-bottom: 1px solid ${borderColor};
 			}
 		`);

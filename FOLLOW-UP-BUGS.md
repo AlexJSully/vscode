@@ -9,10 +9,10 @@ These are existing bugs found while building Tab Stacks (Chrome-style tab groupi
   - `Confirmed by test`, `PR open`, `Fixed`.
 - **Workflow:** write the failing test first, in the suite named in the entry. Then fix, then update the status here.
 - **What goes here:** a bug found while building Tab Stacks is fixed immediately, with a test, when either Tab Stacks introduced it (it does not exist on `main`) or it blocks Tab Stacks from working. A bug that already exists on `main` and does not block Tab Stacks is added here and deferred.
-- **Blocking review (2026-09-26):** FB-1 to FB-10 all exist on `main`, and none of them blocks Tab Stacks, so all are deferred.
+- **Blocking review (2026-09-26, updated 2026-09-28):** FB-1 to FB-12 all exist on `main`, and none of them blocks Tab Stacks, so all are deferred. Bugs that existed on `main` but blocked Tab Stacks were fixed in the feature. They are listed under [Fixed as part of Tab Stacks](#fixed-as-part-of-tab-stacks) so the pull request can mention them.
 - **Scope:** this file is for the fork and does not belong in the upstream Tab Stacks pull request.
 
-**Suggested PR order** (smallest and safest first): FB-3, FB-10, FB-5, FB-6, FB-7, FB-8, FB-1, FB-2, FB-4, FB-9.
+**Suggested PR order** (smallest and safest first): FB-3, FB-10, FB-5, FB-6, FB-11, FB-7, FB-8, FB-1, FB-2, FB-4, FB-9, FB-12.
 
 An upstream search on 2026-09-25 (`gh search issues`) found no existing microsoft/vscode issue for any of them.
 
@@ -30,6 +30,8 @@ An upstream search on 2026-09-25 (`gh search issues`) found no existing microsof
 | [FB-8](#fb-8-closing-the-active-editor-drops-the-other-selected-editors) | Closing the active editor drops the other selected editors | Confirmed by reading; impact needs a test |
 | [FB-9](#fb-9-stylelint-known-variables-are-out-of-date) | Stylelint known variables are out of date with the registered colors | Confirmed by test |
 | [FB-10](#fb-10-a-command-context-test-asserts-the-wrong-result) | A command-context test asserts the wrong result | Confirmed by reading |
+| [FB-11](#fb-11-a-touch-long-press-on-a-tab-opens-two-menus) | A touch long-press on a tab opens two menus | Confirmed by test |
+| [FB-12](#fb-12-connected-tabs-may-keep-the-wrapping-class-on-a-single-row) | Connected tabs may keep the wrapping class on a single row | Needs repro test |
 
 ## FB-1: restored MRU and preview point at the wrong editors
 
@@ -155,3 +157,34 @@ An upstream search on 2026-09-25 (`gh search issues`) found no existing microsof
 - **Confirming test:** change line 183 to assert `resolvedContext2`, which should still pass.
 - **Suggested fix:** as above, and fix the title typo.
 - **PR grouping:** alone (trivial).
+
+## FB-11: a touch long-press on a tab opens two menus
+
+- **Area:** `MultiEditorTabsControl` touch context menus (`src/vs/workbench/browser/parts/editor/multiEditorTabsControl.ts`).
+- **Evidence:**
+  - At `e5f3c4cdf79`, the tabs container listens for `TouchEventType.Contextmenu` at line 621: `this._register(addDisposableListener(tabsContainer, TouchEventType.Contextmenu, e => showContextMenu(e)));`. It does not check where the press started.
+  - Each tab has its own listener at line 1181.
+  - `Gesture` dispatches a long-press to every gesture target that contains the pressed element, so both fire.
+  - The container's Tap handler (around line 424) does check the event target.
+- **Impact:** on touch devices, a long-press on a tab opens the tab's context menu, and the tab-bar menu then opens over it.
+- **How found:** while implementing Tab Stacks slice C, and confirmed with a temporary test that has since been removed. The same root cause affected the new tab stack headers, which Tab Stacks fixed with a test because that case did not exist on `main`.
+- **Confirming test** (suite `MultiEditorTabsControl`): dispatch a `TouchEventType.Contextmenu` gesture on a tab, and assert that the context menu service is called once, with the tab's menu.
+- **Suggested fix:** in the container listener, return unless `e.initialTarget === tabsContainer`, mirroring the Tap handler.
+- **PR grouping:** alone.
+
+## FB-12: connected tabs may keep the wrapping class on a single row
+
+- **Area:** the unwrap check in `MultiEditorTabsControl.doLayoutTabsWrapping` (`src/vs/workbench/browser/parts/editor/multiEditorTabsControl.ts`).
+- **Evidence (candidate):** in the connected-tab test setup, tabs that fit on one row at 600px kept the `wrapping` class. The unwrap check compares the container's `offsetHeight` with the tab height, and connected tabs are taller than that height.
+- **Impact:** unknown. It may only happen in the test setup.
+- **How found:** while fixing review findings for Tab Stacks slice C. Not confirmed in the running product.
+- **Confirming test:** reproduce it in a running Code OSS with Modern UI connected tabs, `workbench.editor.wrapTabs` on, and a window wide enough for one row. If it reproduces, add a `MultiEditorTabsControl` test.
+- **Suggested fix:** compare against the connected tab height when connected tabs are active. Confirm the behaviour first.
+- **PR grouping:** alone, after confirmation.
+
+## Fixed as part of Tab Stacks
+
+These existed on `main`, but they blocked Tab Stacks, so the feature fixed them with tests. The Tab Stacks pull request description should mention them, because they change behaviour even with the setting off.
+
+- **Pill-mode sticky mask did not cover the gutter below the pills.** At `e5f3c4cdf79`, `.sticky-tabs-background` (`src/vs/workbench/contrib/modernUI/browser/media/tabs.css:590-599`) is only one tab height tall. With compact or shrink pinned tabs scrolled, content shows through the 8px gutter under the pills. On `main` this is latent. It shows only with a non-transparent `modernEditorTab.inactiveBackground`, but tab stack indicators make it visible. Fixed with `bottom: 0`. Test: "extends the pill sticky mask over the gutter below the tabs".
+- **A reveal block stayed set while tabs wrap.** At `e5f3c4cdf79`, `blockRevealActiveTabOnce()` (line 2562) sets a flag that only the non-wrapping layout clears (around line 2433). With `workbench.editor.wrapTabs` on, closing a tab through its close button leaves the flag set until wrapping is turned off, and then the next reveal of the active tab is skipped. Tab stack headers set the same flag. Fixed by also clearing it in the wrapping branch. Covered by the header-click reveal tests in `MultiEditorTabsControl`.

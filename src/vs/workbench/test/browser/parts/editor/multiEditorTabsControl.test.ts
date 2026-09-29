@@ -4,7 +4,8 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { $, Dimension, EventType, ModifierKeyEmitter, reset, scheduleAtNextAnimationFrame } from '../../../../../base/browser/dom.js';
+import { EventType as TouchEventType, GestureEvent } from '../../../../../base/browser/touch.js';
+import { $, addDisposableListener, Dimension, EventType, ModifierKeyEmitter, reset, scheduleAtNextAnimationFrame } from '../../../../../base/browser/dom.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { Event } from '../../../../../base/common/event.js';
 import { DisposableStore, toDisposable } from '../../../../../base/common/lifecycle.js';
@@ -14,15 +15,24 @@ import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/tes
 import { TreeViewsDnDService } from '../../../../../editor/common/services/treeViewsDnd.js';
 import { ITreeViewsDnDService } from '../../../../../editor/common/services/treeViewsDndService.js';
 import { IMenu, IMenuService, MenuId, MenuItemAction } from '../../../../../platform/actions/common/actions.js';
-import { DEFAULT_EDITOR_PART_OPTIONS, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView } from '../../../../browser/parts/editor/editor.js';
+import { DEFAULT_EDITOR_PART_OPTIONS, EditorTabStackContextMenuId, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView } from '../../../../browser/parts/editor/editor.js';
 import { MultiEditorTabsControl } from '../../../../browser/parts/editor/multiEditorTabsControl.js';
 import { MultiRowEditorControl } from '../../../../browser/parts/editor/multiRowEditorTabsControl.js';
 import { EditorInputCapabilities, EditorsOrder, IEditorPartOptions } from '../../../../common/editor.js';
-import { EditorGroupModel } from '../../../../common/editor/editorGroupModel.js';
+import { EditorGroupModel, ITabStackUpdate, TabStackId } from '../../../../common/editor/editorGroupModel.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { IHostService } from '../../../../services/host/browser/host.js';
 import { INotebookDocumentService, NotebookDocumentWorkbenchService } from '../../../../services/notebook/common/notebookDocumentService.js';
 import { TestFileEditorInput, TestHostService, TestMenuService, workbenchInstantiationService } from '../../workbenchTestServices.js';
+import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { IContextMenuMenuDelegate, IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
+import { IThemeService } from '../../../../../platform/theme/common/themeService.js';
+import { TestColorTheme, TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
+import { Action, IActionRunner } from '../../../../../base/common/actions.js';
+import type { IManagedHoverContentOrFactory } from '../../../../../base/browser/ui/hover/hover.js';
+import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
+import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import '../../../../contrib/modernUI/browser/media/tabs.css';
 import '../../../../contrib/modernUI/browser/connectedEditorTabs.js';
 
@@ -80,6 +90,15 @@ suite('MultiEditorTabsControl', () => {
 			override isPinned(editorOrIndex: EditorInput | number) { return model.isPinned(editorOrIndex); }
 			override isSticky(editorOrIndex: EditorInput | number) { return model.isSticky(editorOrIndex); }
 			override isSelected(editorOrIndex: EditorInput | number) { return model.isSelected(editorOrIndex); }
+			// An editor group view needs a whole editor part, so these forward to the model and redraw the tabs.
+			// Opening the editor that a selection or a collapse makes active is left to the EditorGroupsService suite.
+			override async setSelection(activeSelectedEditor: EditorInput, inactiveSelectedEditors: EditorInput[]) { model.setSelection(activeSelectedEditor, inactiveSelectedEditors); }
+			override get tabStacks() { return model.tabStacks; }
+			override getTabStack(editor: EditorInput) { return model.getTabStack(editor); }
+			override updateTabStack(tabStack: TabStackId, update: ITabStackUpdate) {
+				model.updateTabStack(tabStack, update);
+				control.updateTabStacks();
+			}
 			override createEditorActions() { return { actions: { primary: [], secondary: [] }, onDidChange: Event.None }; }
 			override relayout() { }
 			override readonly onDidActiveEditorChange = Event.None;
@@ -173,6 +192,89 @@ suite('MultiEditorTabsControl', () => {
 		group.style.width = `${width}px`;
 		tabsControl.layout({ container: new Dimension(width, 33), available: new Dimension(width, 300) });
 		await new Promise<void>(resolve => disposables.add(scheduleAtNextAnimationFrame(mainWindow, () => resolve())));
+	}
+
+	/**
+	 * Replaces the group with one that has an editor for each name, in order
+	 * and the first active, with tab stacks enabled in the model and the tabs.
+	 */
+	function createTabStacksGroup(names: readonly string[], options?: Partial<IEditorPartOptions>, menuIds?: IEditorGroupMenuIds): EditorInput[] {
+		(instantiationService.get(IConfigurationService) as TestConfigurationService).setUserConfiguration('workbench', { editor: { enableTabStacks: true } });
+		control.dispose();
+		container.replaceChildren();
+
+		partOptions = { ...partOptions, enableTabStacks: true, ...options };
+		model = disposables.add(instantiationService.createInstance(EditorGroupModel, undefined));
+		const editors = names.map(name => disposables.add(new TestFileEditorInput(URI.file(`/path/${name}`), 'testEditorInput')));
+		editors.forEach((editor, index) => model.openEditor(editor, { pinned: true, active: index === 0, index }));
+		control = createControl(menuIds);
+
+		return editors;
+	}
+
+	/**
+	 * Gathers the editors into a new tab stack, applies the update to it and
+	 * shows it in the tabs, as the editor group does, and returns its id.
+	 */
+	function addTabStack(editors: readonly EditorInput[], update: ITabStackUpdate = {}): TabStackId {
+		const tabStack = model.addEditorsToTabStack(editors).tabStack!;
+		model.updateTabStack(tabStack.id, update);
+		control.updateTabStacks();
+
+		return tabStack.id;
+	}
+
+	/**
+	 * Describes the children of the tabs container in order: `H:<label>` for a
+	 * tab stack header, with `∅` when it has no name and `(collapsed)` when it
+	 * is collapsed, `T:<name>` for a tab, with `*` when it is in a tab stack,
+	 * and `+` for the Add Tab control.
+	 */
+	function strip(tabsContainer = container.querySelector<HTMLElement>('.tabs-container')!): string[] {
+		return Array.from(tabsContainer.children, child => {
+			if (child.classList.contains('tab-stack-header')) {
+				return `H:${child.querySelector('.tab-stack-header-label')!.textContent || '∅'}${child.classList.contains('collapsed') ? '(collapsed)' : ''}`;
+			}
+
+			if (child.classList.contains('tab')) {
+				return `T:${child.getAttribute('data-resource-name')}${child.classList.contains('tab-stack-member') ? '*' : ''}`;
+			}
+
+			return '+';
+		});
+	}
+
+	function tabStackHeaders(): HTMLElement[] {
+		return Array.from(container.querySelectorAll<HTMLElement>('.tabs-container > .tab-stack-header'));
+	}
+
+	function shownTabs(): HTMLElement[] {
+		return Array.from(container.querySelectorAll<HTMLElement>('.tabs-container > .tab'));
+	}
+
+	/**
+	 * Like {@link connectedGroup}, but with the classic tab style, which lays
+	 * out fixed size tabs at exactly their fixed width.
+	 */
+	function classicGroup(): HTMLElement {
+		const group = connectedGroup();
+		group.closest('.monaco-workbench')!.classList.remove('modern-ui', 'modern-ui-tabs', 'modern-ui-connected-editor-tabs');
+
+		return group;
+	}
+
+	async function nextAnimationFrame(): Promise<void> {
+		await new Promise<void>(resolve => disposables.add(scheduleAtNextAnimationFrame(mainWindow, () => resolve())));
+	}
+
+	/**
+	 * Returns whether the active tab is within the visible part of the tabs.
+	 */
+	function isActiveTabRevealed(): boolean {
+		const activeTab = container.querySelector<HTMLElement>('.tabs-container > .tab.active')!.getBoundingClientRect();
+		const viewport = container.querySelector<HTMLElement>('.monaco-scrollable-element')!.getBoundingClientRect();
+
+		return activeTab.left >= viewport.left && activeTab.right <= viewport.right;
 	}
 
 	test('keeps connected layout current when an Add Tab toolbar follows the editor tabs', async () => {
@@ -1584,6 +1686,508 @@ suite('MultiEditorTabsControl', () => {
 			['closeOthers', 'close'],
 			['close', 'close']
 		]);
+	});
+
+	test('makes no DOM mutations to the tabs container and adds no tab stack indicators without tab stacks', () => {
+		const tabsContainer = container.querySelector<HTMLElement>('.tabs-container')!;
+		const observer = new MutationObserver(() => { });
+		observer.observe(tabsContainer, { childList: true });
+		const [first] = model.getEditors(EditorsOrder.SEQUENTIAL);
+
+		control.updateTabStacks();
+		model.moveEditor(first, 1);
+		control.moveEditor(first, 0, 1);
+		const afterMove = strip();
+		model.stick(first);
+		control.moveEditor(first, 1, 0);
+		control.stickEditor(first);
+		control.updateStyles();
+		const childListChanges = observer.takeRecords().length;
+		observer.disconnect();
+
+		assert.deepStrictEqual({ afterMove, afterStick: strip(), childListChanges, indicators: container.querySelectorAll('.tab-stack-indicator').length }, {
+			afterMove: ['T:file1.txt', 'T:file0.txt'],
+			afterStick: ['T:file0.txt', 'T:file1.txt'],
+			childListChanges: 0,
+			indicators: 0,
+		});
+	});
+
+	test('renders a header before the first tab of each tab stack and keeps the Add Tab control last', () => {
+		const [, b, c, , e] = createTabStacksGroup(['a', 'b', 'c', 'd', 'e'], undefined, { tabsBarAddTab: MenuId.for('test.tabStacks.addTab') });
+
+		addTabStack([b, c], { label: 'Auth' });
+		addTabStack([e]);
+
+		assert.deepStrictEqual(strip(), ['T:a', 'H:Auth', 'T:b*', 'T:c*', 'T:d', 'H:∅', 'T:e*', '+']);
+	});
+
+	test('detaches the tabs of a collapsed tab stack and shows the same tabs again when it expands', () => {
+		const [, b, c] = createTabStacksGroup(['a', 'b', 'c', 'd']);
+		const tabStack = addTabStack([b, c], { label: 'Auth' });
+		const tabs = shownTabs();
+
+		model.updateTabStack(tabStack, { collapsed: true });
+		control.updateTabStacks();
+		const collapsed = { tabs: strip(), attached: tabs.map(tab => tab.isConnected), display: tabs.map(tab => tab.style.display) };
+
+		model.updateTabStack(tabStack, { collapsed: false });
+		control.updateTabStacks();
+
+		assert.deepStrictEqual({ collapsed, expanded: strip(), sameTabs: shownTabs().every((tab, index) => tab === tabs[index]) }, {
+			collapsed: { tabs: ['T:a', 'H:Auth(collapsed)', 'T:d'], attached: [true, false, false, true], display: ['', '', '', ''] },
+			expanded: ['T:a', 'H:Auth', 'T:b*', 'T:c*', 'T:d'],
+			sameTabs: true,
+		});
+	});
+
+	test('shows no tab stacks while they are disabled and shows them once enabled', () => {
+		const [, b, c] = createTabStacksGroup(['a', 'b', 'c'], { enableTabStacks: false });
+		addTabStack([b, c], { label: 'Auth', collapsed: true });
+		const disabled = { tabs: strip(), ariaLabel: shownTabs()[1].getAttribute('aria-label')?.includes('tab stack') };
+
+		const oldOptions = partOptions;
+		partOptions = { ...partOptions, enableTabStacks: true };
+		control.updateOptions(oldOptions, partOptions);
+
+		assert.deepStrictEqual({ disabled, enabled: strip() }, {
+			disabled: { tabs: ['T:a', 'T:b', 'T:c'], ariaLabel: false },
+			enabled: ['T:a', 'H:Auth(collapsed)'],
+		});
+	});
+
+	test('keeps the tab stack styling of tabs that a move redraws', () => {
+		const [, b, c, d] = createTabStacksGroup(['a', 'b', 'c', 'd']);
+		addTabStack([b, c], { color: 'red' });
+
+		model.moveEditor(d, 0);
+		control.moveEditor(d, 3, 0);
+
+		// The indicator comes last because connected tabs clip their first child, the fill
+		const memberTab = shownTabs()[2];
+		assert.deepStrictEqual({
+			tabs: strip(),
+			colors: shownTabs().map(tab => tab.style.getPropertyValue('--tab-stack-color')),
+			memberTabChildren: [memberTab.firstElementChild?.className, memberTab.lastElementChild?.className],
+		}, {
+			tabs: ['T:d', 'T:a', 'H:∅', 'T:b*', 'T:c*'],
+			colors: ['', '', 'var(--vscode-tabStack-red)', 'var(--vscode-tabStack-red)'],
+			memberTabChildren: ['tab-fill', 'tab-stack-indicator'],
+		});
+	});
+
+	test('keeps the left offsets of sticky tabs before a tab stack and moves the header when its first tab is stuck', () => {
+		const [a, b, c, d] = createTabStacksGroup(['a', 'b', 'c', 'd'], { pinnedTabSizing: 'compact' });
+		for (const editor of [a, b]) {
+			model.stick(editor);
+			control.stickEditor(editor);
+		}
+		addTabStack([c, d]);
+		const beforeStick = { tabs: strip(), offsets: shownTabs().map(tab => tab.style.left) };
+
+		model.stick(c);
+		control.stickEditor(c);
+
+		assert.deepStrictEqual({ beforeStick, afterStick: { tabs: strip(), offsets: shownTabs().map(tab => tab.style.left) } }, {
+			beforeStick: { tabs: ['T:a', 'T:b', 'H:∅', 'T:c*', 'T:d*'], offsets: ['0px', '38px', 'auto', 'auto'] },
+			afterStick: { tabs: ['T:a', 'T:b', 'T:c', 'H:∅', 'T:d*'], offsets: ['0px', '38px', '76px', 'auto'] },
+		});
+	});
+
+	test('reuses tab stack headers when redrawing and removes them and the indicators of the tabs with their tab stack', () => {
+		const [, b, c] = createTabStacksGroup(['a', 'b', 'c']);
+		addTabStack([b, c]);
+		const [header] = tabStackHeaders();
+
+		control.updateStyles();
+		control.updateTabStacks();
+		const reused = tabStackHeaders()[0] === header;
+		const indicators = container.querySelectorAll('.tab-stack-indicator').length;
+
+		model.removeEditorsFromTabStack([b, c]);
+		control.updateTabStacks();
+
+		assert.deepStrictEqual({ reused, indicators, removed: !header.isConnected, tabs: strip(), indicatorsAfterRemove: container.querySelectorAll('.tab-stack-indicator').length }, {
+			reused: true,
+			indicators: 2,
+			removed: true,
+			tabs: ['T:a', 'T:b', 'T:c'],
+			indicatorsAfterRemove: 0,
+		});
+	});
+
+	test('closing every editor removes all tabs and tab stack headers', () => {
+		const editors = createTabStacksGroup(['a', 'b', 'c']);
+		addTabStack(editors.slice(1), { collapsed: true });
+
+		for (const editor of editors) {
+			model.closeEditor(editor);
+		}
+		control.closeEditors(editors);
+		const closed = strip();
+
+		editors.forEach((editor, index) => model.openEditor(editor, { pinned: true, active: index === 0, index }));
+		control.openEditors(editors);
+		addTabStack(editors.slice(0, 2));
+
+		assert.deepStrictEqual({ closed, reopened: strip() }, {
+			closed: [],
+			reopened: ['H:∅', 'T:a*', 'T:b*', 'T:c'],
+		});
+	});
+
+	test('moving editors and updating tab stacks while an opened editor has no tab yet does not fail, as when merging groups', () => {
+		const [a, b, c] = createTabStacksGroup(['a', 'b', 'c']);
+		addTabStack([b, c]);
+		const d = disposables.add(new TestFileEditorInput(URI.file('/path/d'), 'testEditorInput'));
+
+		// Merging a group opens editors in the model and updates the tabs once all are moved
+		model.openEditor(d, { pinned: true, index: 3 });
+		model.moveEditor(a, 3);
+		control.moveEditor(a, 0, 3);
+		control.updateTabStacks();
+		control.openEditors([d]);
+
+		assert.deepStrictEqual(strip(), ['H:∅', 'T:b*', 'T:c*', 'T:d', 'T:a']);
+	});
+
+	test('clicking a tab stack header toggles it and a double click on it does not reach the tabs container', () => {
+		const [, b, c] = createTabStacksGroup(['a', 'b', 'c']);
+		addTabStack([b, c], { label: 'Auth' });
+		const [header] = tabStackHeaders();
+		const tabsContainer = container.querySelector<HTMLElement>('.tabs-container')!;
+		let doubleClicksOnTabsContainer = 0;
+		disposables.add(addDisposableListener(tabsContainer, EventType.DBLCLICK, () => doubleClicksOnTabsContainer++));
+
+		header.dispatchEvent(new MouseEvent(EventType.CLICK, { bubbles: true, cancelable: true, button: 0 }));
+		const afterClick = strip();
+		header.dispatchEvent(new MouseEvent(EventType.CLICK, { bubbles: true, cancelable: true, button: 0 }));
+		const afterSecondClick = strip();
+		header.dispatchEvent(new MouseEvent(EventType.DBLCLICK, { bubbles: true, cancelable: true, button: 0 }));
+
+		assert.deepStrictEqual({ afterClick, afterSecondClick, doubleClicksOnTabsContainer }, {
+			afterClick: ['T:a', 'H:Auth(collapsed)'],
+			afterSecondClick: ['T:a', 'H:Auth', 'T:b*', 'T:c*'],
+			doubleClicksOnTabsContainer: 0,
+		});
+	});
+
+	test('clicking a tab stack header keeps the tabs scrolled where they are rather than revealing the active tab', async () => {
+		const group = classicGroup();
+		const [, , , , , f] = createTabStacksGroup(['a', 'b', 'c', 'd', 'e', 'f'], { tabSizing: 'fixed', tabSizingFixedMinWidth: 100, tabSizingFixedMaxWidth: 100, editorActionsLocation: 'hidden' });
+		addTabStack([f], { collapsed: true });
+		await layoutConnectedGroup(group, 250);
+		const tabsContainer = container.querySelector<HTMLElement>('.tabs-container')!;
+		tabsContainer.classList.add('scroll');
+		tabsContainer.scrollLeft = tabsContainer.scrollWidth - tabsContainer.clientWidth;
+		tabsContainer.dispatchEvent(new UIEvent(EventType.SCROLL));
+		tabsContainer.classList.remove('scroll');
+		const scrollLeft = tabsContainer.scrollLeft;
+
+		tabStackHeaders()[0].dispatchEvent(new MouseEvent(EventType.CLICK, { bubbles: true, cancelable: true, button: 0 }));
+		await nextAnimationFrame();
+
+		assert.deepStrictEqual({ tabs: strip(), scrolled: scrollLeft > 0, keptScrollLeft: tabsContainer.scrollLeft === scrollLeft }, {
+			tabs: ['T:a', 'T:b', 'T:c', 'T:d', 'T:e', 'H:∅', 'T:f*'],
+			scrolled: true,
+			keptScrollLeft: true,
+		});
+	});
+
+	test('an action of the menu of a tab stack header that changes nothing does not stop the next reveal of the active tab', async () => {
+		let actionRunner: IActionRunner | undefined;
+		// The context menu UI is the boundary: it runs the actions of the menu with the action runner the tab bar gives it
+		instantiationService.stub(IContextMenuService, new class extends mock<IContextMenuService>() {
+			override showContextMenu(delegate: IContextMenuMenuDelegate): void {
+				actionRunner = delegate.actionRunner;
+			}
+		});
+		const group = classicGroup();
+		const [, b, , , e] = createTabStacksGroup(['a', 'b', 'c', 'd', 'e'], { tabSizing: 'fixed', tabSizingFixedMinWidth: 100, tabSizingFixedMaxWidth: 100, editorActionsLocation: 'hidden' });
+		addTabStack([b]);
+		await layoutConnectedGroup(group, 250);
+
+		// Like a rename whose input is cancelled, the action ends without changing the tab stack
+		tabStackHeaders()[0].dispatchEvent(new MouseEvent(EventType.CONTEXT_MENU, { bubbles: true, cancelable: true, button: 2 }));
+		await actionRunner!.run(disposables.add(new Action('test.tabStacks.cancelled')));
+		const revealedBefore = isActiveTabRevealed();
+		model.openEditor(e, { active: true });
+		control.openEditors([e]);
+		await nextAnimationFrame();
+
+		assert.deepStrictEqual({ revealedBefore, revealedAfter: isActiveTabRevealed() }, {
+			revealedBefore: true,
+			revealedAfter: true,
+		});
+	});
+
+	test('clicking a tab stack header while tabs wrap does not stop revealing the active tab once they no longer wrap', async () => {
+		const group = classicGroup();
+		const [, b, , , e] = createTabStacksGroup(['a', 'b', 'c', 'd', 'e'], { wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 100, tabSizingFixedMaxWidth: 100, editorActionsLocation: 'hidden' });
+		addTabStack([b]);
+		await layoutConnectedGroup(group, 250);
+		const tabsAndActionsContainer = container.querySelector<HTMLElement>('.tabs-and-actions-container')!;
+		const wrapped = tabsAndActionsContainer.classList.contains('wrapping');
+
+		tabStackHeaders()[0].dispatchEvent(new MouseEvent(EventType.CLICK, { bubbles: true, cancelable: true, button: 0 }));
+		await nextAnimationFrame();
+		model.openEditor(e, { active: true });
+		control.openEditors([e]);
+		const oldOptions = partOptions;
+		partOptions = { ...partOptions, wrapTabs: false };
+		control.updateOptions(oldOptions, partOptions);
+		await nextAnimationFrame();
+
+		assert.deepStrictEqual({ wrapped, wrappedAfter: tabsAndActionsContainer.classList.contains('wrapping'), revealed: isActiveTabRevealed() }, {
+			wrapped: true,
+			wrappedAfter: false,
+			revealed: true,
+		});
+	});
+
+	test('Enter and Space toggle a focused tab stack header, and Shift+F10 and right click open its menu for the index of its first editor in the group', () => {
+		const menus: { menuId: string | undefined; context: unknown }[] = [];
+		// The context menu UI is the boundary: it renders the menu the tab bar asks for
+		instantiationService.stub(IContextMenuService, new class extends mock<IContextMenuService>() {
+			override showContextMenu(delegate: IContextMenuMenuDelegate): void {
+				menus.push({ menuId: delegate.menuId?.id, context: delegate.getActionsContext?.() });
+			}
+		});
+		const [s, , b, c] = createTabStacksGroup(['s', 'a', 'b', 'c'], { pinnedTabsOnSeparateRow: true });
+		model.stick(s);
+		addTabStack([b, c], { label: 'Auth' });
+		control.dispose();
+		container.replaceChildren();
+		const multiRowControl = disposables.add(instantiationService.createInstance(MultiRowEditorControl, container, editorPartsView, groupsView, groupView, model, undefined, false, false));
+		multiRowControl.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL));
+		const unstickyTabs = container.querySelectorAll<HTMLElement>('.tabs-container')[1];
+		const header = unstickyTabs.querySelector<HTMLElement>('.tab-stack-header')!;
+		const states: string[][] = [];
+		groupView.updateTabStack = (tabStack, update) => {
+			model.updateTabStack(tabStack, update);
+			multiRowControl.updateTabStacks();
+		};
+
+		for (const keyCode of [13 /* Enter */, 32 /* Space */]) {
+			header.dispatchEvent(new KeyboardEvent(EventType.KEY_UP, { keyCode, bubbles: true, cancelable: true }));
+			states.push(strip(unstickyTabs));
+		}
+		header.dispatchEvent(new KeyboardEvent(EventType.KEY_DOWN, { keyCode: 121 /* F10 */, shiftKey: true, bubbles: true, cancelable: true }));
+		header.dispatchEvent(new MouseEvent(EventType.CONTEXT_MENU, { bubbles: true, cancelable: true, button: 2 }));
+
+		const menu = { menuId: EditorTabStackContextMenuId.id, context: { groupId: model.id, editorIndex: 2 } };
+		assert.deepStrictEqual({ states, menus }, {
+			states: [['T:a', 'H:Auth(collapsed)'], ['T:a', 'H:Auth', 'T:b*', 'T:c*']],
+			menus: [menu, menu],
+		});
+	});
+
+	test('a tab stack header is a tab that tells whether it is expanded and how many editors it has, and its hover tells it in sentence case', () => {
+		const hovers = new Map<HTMLElement, IManagedHoverContentOrFactory>();
+		// The hover UI is the boundary: it shows the content the tab bar gives it
+		instantiationService.stub(IHoverService, {
+			...NullHoverService,
+			setupManagedHover: (hoverDelegate, targetElement, content, options) => {
+				hovers.set(targetElement, content);
+				return NullHoverService.setupManagedHover(hoverDelegate, targetElement, content, options);
+			}
+		});
+		const [, b, c, d, e, f, g] = createTabStacksGroup(['a', 'b', 'c', 'd', 'e', 'f', 'g']);
+		addTabStack([b, c], { label: 'Auth' });
+		addTabStack([d], { label: 'Solo', collapsed: true });
+		addTabStack([e, f]);
+		addTabStack([g]);
+
+		assert.deepStrictEqual(tabStackHeaders().map(header => {
+			const hover = hovers.get(header);
+			return {
+				role: header.getAttribute('role'),
+				selected: header.getAttribute('aria-selected'),
+				expanded: header.getAttribute('aria-expanded'),
+				label: header.getAttribute('aria-label'),
+				hover: typeof hover === 'function' ? hover() : hover,
+				tabIndex: header.tabIndex,
+				unnamed: header.classList.contains('unnamed'),
+			};
+		}), [
+			{ role: 'tab', selected: 'false', expanded: 'true', label: 'tab stack Auth, 2 editors', hover: 'Auth (2 editors)', tabIndex: -1, unnamed: false },
+			{ role: 'tab', selected: 'false', expanded: 'false', label: 'tab stack Solo, 1 editor', hover: 'Solo (1 editor)', tabIndex: -1, unnamed: false },
+			{ role: 'tab', selected: 'false', expanded: 'true', label: 'unnamed tab stack, 2 editors', hover: 'Unnamed tab stack (2 editors)', tabIndex: -1, unnamed: true },
+			{ role: 'tab', selected: 'false', expanded: 'true', label: 'unnamed tab stack, 1 editor', hover: 'Unnamed tab stack (1 editor)', tabIndex: -1, unnamed: true },
+		]);
+	});
+
+	test('tabs name their tab stack in their aria label by editor when pinned tabs are on a separate row', () => {
+		const [s1, s2, , b, c] = createTabStacksGroup(['s1', 's2', 'a', 'b', 'c'], { pinnedTabsOnSeparateRow: true });
+		model.stick(s1);
+		model.stick(s2);
+		model.updateTabStack(model.addEditorsToTabStack([b]).tabStack!.id, { label: 'Auth' });
+		model.addEditorsToTabStack([c]);
+		control.dispose();
+		container.replaceChildren();
+		const multiRowControl = disposables.add(instantiationService.createInstance(MultiRowEditorControl, container, editorPartsView, groupsView, groupView, model, undefined, false, false));
+		multiRowControl.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL));
+
+		const unstickyTabs = Array.from(container.querySelectorAll<HTMLElement>('.tabs-container')[1].querySelectorAll<HTMLElement>('.tab'));
+		assert.deepStrictEqual(unstickyTabs.map(tab => {
+			const ariaLabel = tab.getAttribute('aria-label')!;
+			return ariaLabel.endsWith(', in tab stack Auth') ? 'Auth' : ariaLabel.endsWith(', in unnamed tab stack') ? 'unnamed' : undefined;
+		}), [undefined, 'Auth', 'unnamed']);
+	});
+
+	test('connected row markers and minimum widths ignore the tabs of a collapsed tab stack', async () => {
+		const group = connectedGroup();
+		const [, , c, d] = createTabStacksGroup(['a', 'b', 'c', 'd'], { wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, editorActionsLocation: 'hidden' });
+		const tabStack = addTabStack([c, d]);
+		const [a, b, ...collapsedTabs] = shownTabs();
+		await layoutConnectedGroup(group, 150);
+
+		model.updateTabStack(tabStack, { collapsed: true });
+		control.updateTabStacks();
+		await layoutConnectedGroup(group, 150);
+
+		assert.deepStrictEqual({
+			tabs: strip(),
+			upperRow: [a, b].map(tab => tab.classList.contains('connected-tab-upper-row')),
+			topRow: [a, b].map(tab => tab.classList.contains('connected-tab-top-row')),
+			collapsedMinimumWidths: collapsedTabs.map(tab => /^\d+px$/.test(tab.style.getPropertyValue('--connected-tab-min-width'))),
+		}, {
+			tabs: ['T:a', 'T:b', 'H:∅(collapsed)'],
+			upperRow: [true, false],
+			topRow: [true, false],
+			collapsedMinimumWidths: [true, true],
+		});
+	});
+
+	test('marks a tab stack header that ends a wrapped row as last in its row and leaves no row marker on the tabs that a collapse hides', async () => {
+		const group = classicGroup();
+		const [, b, c] = createTabStacksGroup(['a', 'b', 'c'], { wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, editorActionsLocation: 'hidden' });
+		const tabStack = addTabStack([b, c]);
+		const [header] = tabStackHeaders();
+		const [, ...memberTabs] = shownTabs();
+		await layoutConnectedGroup(group, 600);
+
+		// The first tab and the header fit in the first row, but its first tab does not
+		await layoutConnectedGroup(group, 120 + header.offsetWidth + 10);
+		const lastInRow = (element: HTMLElement) => element.classList.contains('last-in-row');
+		const tabsAndActionsContainer = container.querySelector<HTMLElement>('.tabs-and-actions-container')!;
+		const wrapped = { wrapping: tabsAndActionsContainer.classList.contains('wrapping'), header: lastInRow(header), memberTabs: memberTabs.map(lastInRow) };
+
+		model.updateTabStack(tabStack, { collapsed: true });
+		control.updateTabStacks();
+		await layoutConnectedGroup(group, 600);
+		model.updateTabStack(tabStack, { collapsed: false });
+		control.updateTabStacks();
+		await layoutConnectedGroup(group, 600);
+
+		assert.deepStrictEqual({ wrapped, unwrapped: { wrapping: tabsAndActionsContainer.classList.contains('wrapping'), tabs: strip(), lastInRow: [header, ...shownTabs()].map(lastInRow) } }, {
+			wrapped: { wrapping: true, header: true, memberTabs: [true, true] },
+			unwrapped: { wrapping: false, tabs: ['T:a', 'H:∅', 'T:b*', 'T:c*'], lastInRow: [false, false, false, false] },
+		});
+	});
+
+	test('tabs do not wrap when the header of a collapsed last tab stack does not fit next to the editor actions', async () => {
+		const group = classicGroup();
+		const [, b] = createTabStacksGroup(['a', 'b'], { wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 50, tabSizingFixedMaxWidth: 50, editorActionsLocation: 'hidden' });
+		addTabStack([b], { label: 'A tab stack with a name longer than its header', collapsed: true });
+		await layoutConnectedGroup(group, 100);
+
+		assert.deepStrictEqual({
+			tabs: strip(),
+			headerWidth: tabStackHeaders()[0].offsetWidth,
+			wrapping: container.querySelector('.tabs-and-actions-container')!.classList.contains('wrapping'),
+		}, {
+			tabs: ['T:a', 'H:A tab stack with a name longer than its header(collapsed)'],
+			headerWidth: 120,
+			wrapping: false,
+		});
+	});
+
+	test('fixed tab sizing freezes the tabs of a collapsed tab stack at the width of the shown tabs, which they keep when a close shows them', async () => {
+		const group = classicGroup();
+		const [, b, c, d] = createTabStacksGroup(['a', 'b', 'c', 'd', 'e', 'f'], { tabSizing: 'fixed', tabSizingFixedMinWidth: 100, tabSizingFixedMaxWidth: 100, editorActionsLocation: 'hidden' });
+		const tabs = shownTabs();
+		addTabStack([c, d], { collapsed: true });
+		await layoutConnectedGroup(group, 800);
+		const frozenWidth = (tab: HTMLElement) => tab.style.getPropertyValue('--tab-sizing-current-width');
+
+		// Closing a tab while the mouse is over the tabs freezes their widths
+		container.querySelector('.tabs-container')!.dispatchEvent(new MouseEvent(EventType.MOUSE_ENTER));
+		control.beforeCloseEditor(b);
+		const frozenWidths = tabs.map(frozenWidth);
+		model.closeEditor(b);
+		control.closeEditor(b);
+
+		assert.deepStrictEqual({ frozenWidths, tabs: strip(), shownWidths: shownTabs().map(frozenWidth) }, {
+			frozenWidths: ['100px', '100px', '100px', '100px', '100px', '100px'],
+			tabs: ['T:a', 'H:∅(collapsed)', 'T:e', 'T:f'],
+			shownWidths: ['100px', '100px', '100px'],
+		});
+	});
+
+	test('shift click selects the editors in between except those hidden in a collapsed tab stack', async () => {
+		const [, b, c] = createTabStacksGroup(['a', 'b', 'c', 'd']);
+		addTabStack([b, c], { collapsed: true });
+		const lastTab = shownTabs()[1];
+
+		lastTab.dispatchEvent(new MouseEvent(EventType.MOUSE_DOWN, { bubbles: true, cancelable: true, button: 0, shiftKey: true }));
+		await Promise.resolve();
+
+		assert.deepStrictEqual(model.selectedEditors.map(editor => editor.resource?.path).sort(), ['/path/a', '/path/d']);
+	});
+
+	test('tab stack headers show black or white text, whichever contrasts more with their color in the current theme', () => {
+		const themeService = instantiationService.get(IThemeService) as TestThemeService;
+		// A translucent color shows the tabs background through it
+		themeService.setTheme(new TestColorTheme({ 'tabStack.yellow': '#CCA70066', 'tabStack.purple': '#652D90', 'editorGroupHeader.tabsBackground': '#252526' }));
+		const [, b, c, d] = createTabStacksGroup(['a', 'b', 'c', 'd']);
+		addTabStack([b], { color: 'yellow' });
+		addTabStack([c], { color: 'purple' });
+		addTabStack([d], { color: '#1a2b3c' });
+		const headerColors = () => tabStackHeaders().map(header => [header.style.getPropertyValue('--tab-stack-color'), header.style.getPropertyValue('--tab-stack-foreground')]);
+		const initialHeaders = headerColors();
+
+		themeService.setTheme(new TestColorTheme({ 'tabStack.yellow': '#CCA70066', 'tabStack.purple': '#E0C8F0', 'editorGroupHeader.tabsBackground': '#FFFFFF' }));
+
+		assert.deepStrictEqual({
+			initialHeaders,
+			headersAfterThemeChange: headerColors(),
+			tabs: shownTabs().map(tab => tab.style.getPropertyValue('--tab-stack-color')),
+		}, {
+			initialHeaders: [
+				['var(--vscode-tabStack-yellow)', '#ffffff'],
+				['var(--vscode-tabStack-purple)', '#ffffff'],
+				['#1a2b3c', '#ffffff'],
+			],
+			headersAfterThemeChange: [
+				['var(--vscode-tabStack-yellow)', '#000000'],
+				['var(--vscode-tabStack-purple)', '#000000'],
+				['#1a2b3c', '#ffffff'],
+			],
+			tabs: ['', 'var(--vscode-tabStack-yellow)', 'var(--vscode-tabStack-purple)', '#1a2b3c'],
+		});
+	});
+
+	test('a touch long press on a tab stack header opens only its menu', () => {
+		const menus: (string | undefined)[] = [];
+		// The context menu UI is the boundary: it renders the menu the tab bar asks for
+		instantiationService.stub(IContextMenuService, new class extends mock<IContextMenuService>() {
+			override showContextMenu(delegate: IContextMenuMenuDelegate): void {
+				menus.push(delegate.menuId?.id);
+			}
+		});
+		const [, b] = createTabStacksGroup(['a', 'b']);
+		addTabStack([b]);
+		const [header] = tabStackHeaders();
+
+		// Like Gesture, dispatch the long press to each gesture target containing where it started, innermost first
+		const longPress = mainWindow.document.createEvent('CustomEvent') as unknown as GestureEvent;
+		longPress.initEvent(TouchEventType.Contextmenu, false, true);
+		longPress.initialTarget = header;
+		header.dispatchEvent(longPress);
+		container.querySelector('.tabs-container')!.dispatchEvent(longPress);
+
+		assert.deepStrictEqual(menus, [EditorTabStackContextMenuId.id]);
 	});
 
 	ensureNoDisposablesAreLeakedInTestSuite();

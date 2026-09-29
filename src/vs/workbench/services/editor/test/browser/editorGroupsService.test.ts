@@ -27,6 +27,7 @@ import { CloseAllEditorGroupsAction } from '../../../../browser/parts/editor/edi
 import { ActiveEditorInTabStackContext, EditorGroupHasTabStacksContext } from '../../../../common/contextkeys.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { IContextMenuMenuDelegate, IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
+import { IEditorGroupView } from '../../../../browser/parts/editor/editor.js';
 
 suite('EditorGroupsService', () => {
 
@@ -2442,6 +2443,18 @@ suite('EditorGroupsService', () => {
 		}).join(' ');
 	}
 
+	/**
+	 * Describes the tab bar of a group in order: each tab as the name of its
+	 * editor and each tab stack header as `H`, followed by `^` when its tab
+	 * stack is collapsed.
+	 */
+	function tabBar(group: IEditorGroupView): string {
+		return Array.from(group.element.querySelector('.tabs-container')!.children, child => child.classList.contains('tab-stack-header')
+			? `H${child.classList.contains('collapsed') ? '^' : ''}`
+			: child.getAttribute('data-resource-name')
+		).join(' ');
+	}
+
 	test('tab stacks - replaceEditors keeps the replacements in the tab stack of the replaced editors', async () => {
 		const [part] = await createPart(createTabStacksInstantiationService());
 		const group = part.activeGroup;
@@ -2547,26 +2560,73 @@ suite('EditorGroupsService', () => {
 		});
 	});
 
-	test('tab stacks - tab stack operations keep the tabs in the order of the editors', async () => {
+	test('tab stacks - tab stack operations keep the tab bar in the order of the editors with a header before each tab stack', async () => {
 		const [part] = await createPart(createTabStacksInstantiationService());
 		const group = part.activeGroup;
-		const tabNames = () => Array.from(group.element.querySelectorAll('.tab')).map(tab => tab.getAttribute('data-resource-name')).join(' ');
 
-		const [first, , third, , fifth] = await openPinnedTestEditors(group, '1', '2', '3', '4', '5');
-		group.addEditorsToTabStack([first, third, fifth]);
-		const afterAdd = tabNames();
-		group.moveTabStack(group.tabStacks[0].id, 2);
-		const afterMove = tabNames();
+		const [first, second, third, , fifth] = await openPinnedTestEditors(group, '1', '2', '3', '4', '5');
+		const tabStack = group.addEditorsToTabStack([first, third, fifth])!.id;
+		const afterAdd = tabBar(group);
+		group.moveTabStack(tabStack, 2);
+		const afterMove = tabBar(group);
 		group.removeEditorsFromTabStack([third]);
-		const afterRemove = tabNames();
+		const afterRemove = tabBar(group);
 		group.moveEditorsWithinGroup([third], 0);
+		const afterMoveWithinGroup = tabBar(group);
 
-		assert.deepStrictEqual({ afterAdd, afterMove, afterRemove, afterMoveWithinGroup: tabNames(), editors: tabStackState(group) }, {
-			afterAdd: '1 3 5 2 4',
-			afterMove: '2 4 1 3 5',
-			afterRemove: '2 4 1 5 3',
-			afterMoveWithinGroup: '3 2 4 1 5',
-			editors: '3 2 4 1a 5a*'
+		// Collapsing the tab stack of the active editor opens the nearest editor outside of it
+		const activeEditorChange = Event.toPromise(group.onDidActiveEditorChange);
+		group.updateTabStack(tabStack, { collapsed: true });
+		await activeEditorChange;
+		const afterCollapse = tabBar(group);
+		group.addEditorsToTabStack([second], tabStack);
+
+		assert.deepStrictEqual({ afterAdd, afterMove, afterRemove, afterMoveWithinGroup, afterCollapse, afterAddToCollapsed: tabBar(group), editors: tabStackState(group) }, {
+			afterAdd: 'H 1 3 5 2 4',
+			afterMove: '2 4 H 1 3 5',
+			afterRemove: '2 4 H 1 5 3',
+			afterMoveWithinGroup: '3 2 4 H 1 5',
+			afterCollapse: '3 2 4 H^',
+			afterAddToCollapsed: '3 4 H^',
+			editors: '3 4* 2a^ 1a^ 5a^'
+		});
+	});
+
+	test('tab stacks - opening an editor hidden in a collapsed tab stack shows the tab stack expanded in the tab bar', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+
+		const [first, second, third] = await openPinnedTestEditors(group, '1', '2', '3');
+		group.addEditorsToTabStack([second, third]);
+		await group.openEditor(first);
+		group.updateTabStack(group.tabStacks[0].id, { collapsed: true });
+		const collapsed = tabBar(group);
+
+		await group.openEditor(third);
+
+		assert.deepStrictEqual({ collapsed, expanded: tabBar(group), editors: tabStackState(group) }, {
+			collapsed: '1 H^',
+			expanded: '1 H 2 3',
+			editors: '1 2a 3a*'
+		});
+	});
+
+	test('tab stacks - clicking the header of the tab stack of the active editor collapses it and opens the nearest editor outside of it', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+
+		const [, second, third] = await openPinnedTestEditors(group, '1', '2', '3', '4');
+		group.addEditorsToTabStack([second, third]);
+		await group.openEditor(second);
+
+		const activeEditorChange = Event.toPromise(group.onDidActiveEditorChange);
+		group.element.querySelector('.tab-stack-header')!.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+		await activeEditorChange;
+
+		assert.deepStrictEqual({ tabBar: tabBar(group), editors: tabStackState(group), activeEditorPane: editorName(group.activeEditorPane?.input) }, {
+			tabBar: '1 H^ 4',
+			editors: '1 2a^ 3a^ 4*',
+			activeEditorPane: '4'
 		});
 	});
 

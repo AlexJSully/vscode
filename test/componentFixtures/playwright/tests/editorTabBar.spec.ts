@@ -30,3 +30,20 @@ for (const theme of ['DarkHighContrast', 'LightHighContrast']) {
 		await expect(action).toHaveCSS('outline-width', '1px');
 	});
 }
+
+test('clicking a tab stack header expands and collapses its tab stack', async ({ page }) => {
+	await openFixture(page, 'editor/editorTabBar/editorTabBar/ModernUIOn/TabStacksCollapsed/Dark', '.tabs-container > .tab.active');
+	const header = page.locator('.tabs-container > .tab-stack-header', { hasText: 'Auth' });
+	const tabs = page.locator('.tabs-container > .tab');
+
+	await expect(header).toHaveAttribute('aria-expanded', 'false');
+	await expect(tabs).toHaveCount(2);
+
+	await header.click();
+	await expect(header).toHaveAttribute('aria-expanded', 'true');
+	await expect(tabs).toHaveCount(4);
+
+	await header.click();
+	await expect(header).toHaveAttribute('aria-expanded', 'false');
+	await expect(tabs).toHaveCount(2);
+});

@@ -212,7 +212,7 @@
 }
 
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.active:first-child > .tab-fill::before,
-.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.last-in-row + .tab.active > .tab-fill::before {
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > :is(.tab, .tab-stack-header).last-in-row + .tab.active > .tab-fill::before {
 	content: none;
 }
 
@@ -262,7 +262,7 @@
 }
 
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.active.connected-tab-left-edge > .tab-connected-edge::before,
-.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.last-in-row + .tab.active > .tab-connected-edge::before,
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > :is(.tab, .tab-stack-header).last-in-row + .tab.active > .tab-connected-edge::before,
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .modern-ui-editor-tab.active.connected-tab-left-edge > .tab-connected-edge::before {
 	content: none;
 }
@@ -386,7 +386,7 @@
 	outline-offset: calc(-1 * var(--vscode-strokeThickness));
 }
 
-.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container.wrapping .tabs-container > .tab.last-in-row + .tab:not(.connected-tab-upper-row):not(.sticky-compact).tab-actions-left > .tab-actions {
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container.wrapping .tabs-container > :is(.tab, .tab-stack-header).last-in-row + .tab:not(.connected-tab-upper-row):not(.sticky-compact).tab-actions-left > .tab-actions {
 	left: calc(var(--modern-ui-connected-tab-action-inset) - var(--vscode-spacing-size20) - var(--vscode-strokeThickness));
 }
 
@@ -542,7 +542,7 @@
 
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab:first-child:not(.connected-tab-upper-row) > .tab-fill,
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container.wrapping .tabs-container > .tab:first-child > .tab-fill,
-.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.last-in-row + .tab > .tab-fill {
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > :is(.tab, .tab-stack-header).last-in-row + .tab > .tab-fill {
 	left: 0;
 	border-top-left-radius: 0;
 	border-bottom-left-radius: 0;
@@ -572,4 +572,22 @@
 
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.connected-tab-upper-row.active > .tab-actions {
 	border-radius: var(--vscode-cornerRadius-small);
+}
+
+/* The shoulders of an active neighbour curve over the header's padding, not over its chip. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab-stack-header {
+	padding-inline: var(--modern-ui-connected-tab-shoulder-radius);
+}
+
+/* Connected fills span the whole tab, and so does the tab stack indicator. It stays
+ * beneath the active tab's fill so that the shoulders curve over a neighbour's indicator. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.tab-stack-member > .tab-stack-indicator {
+	left: 0;
+	right: 0;
+	z-index: 0;
+}
+
+/* The active tab stack member stays open to the document below it. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.active:not(.connected-tab-upper-row) > .tab-stack-indicator {
+	display: none;
 }

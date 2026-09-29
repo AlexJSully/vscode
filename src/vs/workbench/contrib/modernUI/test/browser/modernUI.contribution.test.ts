@@ -40,6 +40,7 @@ import '../../../../browser/media/floatingPanels.css';
 import '../../../../../base/browser/ui/menu/menubar.css';
 import '../../../../browser/parts/activitybar/media/activityaction.css';
 import '../../../../browser/parts/editor/media/modalEditorPart.css';
+import '../../../../browser/parts/editor/media/multieditortabscontrol.css';
 import '../../../../browser/parts/media/paneCompositePart.css';
 import '../../../../browser/parts/statusbar/media/statusbarpart.css';
 import '../../../../browser/parts/titlebar/media/menubarControl.css';
@@ -2817,6 +2818,75 @@ suite('ModernUIContribution', () => {
 		});
 	});
 
+	test('starts a connected row after a tab stack header that ends the row above', () => {
+		const root = document.createElement('div');
+		root.className = 'monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs';
+		root.style.setProperty('--vscode-strokeThickness', '1px');
+		root.style.setProperty('--vscode-cornerRadius-small', '4px');
+		document.body.appendChild(root);
+		store.add(toDisposable(() => root.remove()));
+
+		const editor = appendElement(root, 'part editor');
+		const content = appendElement(editor, 'content');
+		const group = appendElement(content, 'editor-group-container active');
+		const title = appendElement(group, 'title tabs');
+		const tabs = appendElement(title, 'tabs-container');
+		const header = appendElement(tabs, 'tab-stack-header');
+		const tab = appendElement(tabs, 'tab active');
+		const fill = appendElement(tab, 'tab-fill');
+		const edge = appendElement(tab, 'tab-connected-edge');
+		const targetWindow = getWindow(root);
+		const getLeadingEdge = (headerEndsRow: boolean) => {
+			header.classList.toggle('last-in-row', headerEndsRow);
+			return {
+				shoulder: targetWindow.getComputedStyle(fill, '::before').content,
+				mask: targetWindow.getComputedStyle(edge, '::before').content,
+				leftCorner: targetWindow.getComputedStyle(fill).borderTopLeftRadius,
+			};
+		};
+
+		assert.deepStrictEqual({
+			rowStart: getLeadingEdge(true),
+			withinRow: getLeadingEdge(false),
+		}, {
+			rowStart: { shoulder: 'none', mask: 'none', leftCorner: '0px' },
+			withinRow: { shoulder: '""', mask: '""', leftCorner: '5px' },
+		});
+	});
+
+	test('keeps connected shoulders clear of tab stack headers and the active tab stack member open to the document', () => {
+		const root = document.createElement('div');
+		root.className = 'monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs';
+		root.style.setProperty('--vscode-spacing-size20', '2px');
+		root.style.setProperty('--vscode-spacing-size40', '4px');
+		root.style.setProperty('--vscode-strokeThickness', '1px');
+		root.style.setProperty('--vscode-cornerRadius-small', '4px');
+		document.body.appendChild(root);
+		store.add(toDisposable(() => root.remove()));
+
+		const editor = appendElement(root, 'part editor');
+		const content = appendElement(editor, 'content');
+		const group = appendElement(content, 'editor-group-container active');
+		const title = appendElement(group, 'title tabs');
+		const tabs = appendElement(title, 'tabs-container');
+		const header = appendElement(tabs, 'tab-stack-header');
+		const activeTab = appendElement(tabs, 'tab active tab-stack-member');
+		const activeFill = appendElement(activeTab, 'tab-fill');
+		const activeIndicator = appendElement(activeTab, 'tab-stack-indicator');
+		const inactiveIndicator = appendElement(appendElement(tabs, 'tab tab-stack-member'), 'tab-stack-indicator');
+		const targetWindow = getWindow(root);
+		const headerStyle = targetWindow.getComputedStyle(header);
+		const shoulderWidth = targetWindow.getComputedStyle(activeFill, '::before').width;
+
+		assert.deepStrictEqual({
+			headerPadding: [headerStyle.paddingLeft, headerStyle.paddingRight],
+			indicators: [targetWindow.getComputedStyle(activeIndicator).display, targetWindow.getComputedStyle(inactiveIndicator).display],
+		}, {
+			headerPadding: [shoulderWidth, shoulderWidth],
+			indicators: ['none', 'block'],
+		});
+	});
+
 	test('extends the connected sticky mask to the strip separator', () => {
 		const root = document.createElement('div');
 		root.className = 'monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs';
@@ -2849,6 +2919,36 @@ suite('ModernUIContribution', () => {
 			bottom: '1px',
 			height: 32,
 			separatorHeight: 1,
+		});
+	});
+
+	test('extends the pill sticky mask over the gutter below the tabs', () => {
+		const root = document.createElement('div');
+		root.className = 'monaco-workbench modern-ui modern-ui-tabs';
+		root.style.setProperty('--editor-group-tab-height', '24px');
+		document.body.appendChild(root);
+		store.add(toDisposable(() => root.remove()));
+
+		const editor = appendElement(root, 'part editor');
+		const content = appendElement(editor, 'content');
+		const group = appendElement(content, 'editor-group-container active');
+		const title = appendElement(group, 'title tabs');
+		const tabsAndActions = appendElement(title, 'tabs-and-actions-container');
+		const scrollable = appendElement(tabsAndActions, 'monaco-scrollable-element');
+		scrollable.style.position = 'relative';
+		scrollable.style.width = '250px';
+		scrollable.style.height = '32px';
+		const stickyBackground = appendElement(scrollable, 'sticky-tabs-background');
+		stickyBackground.style.width = '84px';
+		const scrollableBounds = scrollable.getBoundingClientRect();
+		const stickyBounds = stickyBackground.getBoundingClientRect();
+
+		assert.deepStrictEqual({
+			top: stickyBounds.top - scrollableBounds.top,
+			bottom: scrollableBounds.bottom - stickyBounds.bottom,
+		}, {
+			top: 0,
+			bottom: 0,
 		});
 	});
 

@@ -1087,6 +1087,7 @@
 		"--tab-sizing-fixed-min-width",
 		"--tab-sizing-fixed-max-width",
 		"--tab-stack-color",
+		"--tab-stack-foreground",
 		"--editor-group-tab-height",
 		"--editor-group-tabs-height",
 		"--testMessageDecorationFontFamily",

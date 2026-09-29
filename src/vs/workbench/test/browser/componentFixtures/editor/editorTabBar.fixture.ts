@@ -32,7 +32,7 @@ import { TreeViewsDnDService } from '../../../../../editor/common/services/treeV
 import { CodeEditorWidget } from '../../../../../editor/browser/widget/codeEditor/codeEditorWidget.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { EditorInputCapabilities, EditorsOrder, IEditorPartOptions, IToolbarActions, Verbosity } from '../../../../common/editor.js';
-import { EditorGroupModel } from '../../../../common/editor/editorGroupModel.js';
+import { EditorGroupModel, ITabStackUpdate, TabStackColor, TabStackId } from '../../../../common/editor/editorGroupModel.js';
 import {
 	EDITOR_GROUP_HEADER_NO_TABS_BACKGROUND,
 	EDITOR_GROUP_HEADER_TABS_BACKGROUND,
@@ -134,6 +134,16 @@ class FixtureEditorInput extends EditorInput {
 // Editor specs used to populate the group model
 // ============================================================================
 
+/**
+ * A tab stack of the fixture. The editors whose specs share the same object
+ * form one tab stack; sticky editors never join one.
+ */
+interface ITabStackSpec {
+	readonly label: string;
+	readonly color: TabStackColor;
+	readonly collapsed?: boolean;
+}
+
 interface IEditorSpec {
 	readonly resource: URI;
 	readonly typeId?: string;
@@ -145,6 +155,8 @@ interface IEditorSpec {
 	readonly active?: boolean;
 	/** Include this editor in the multi-selection (the active editor is always selected). */
 	readonly selected?: boolean;
+	/** Add this editor to the tab stack once all editors are open. */
+	readonly tabStack?: ITabStackSpec;
 }
 
 function file(path: string): URI {
@@ -286,6 +298,52 @@ function cannotCloseDirtyEditorSpecs(): IEditorSpec[] {
 	];
 }
 
+/**
+ * A pinned tab followed by a named tab stack, a tab stack with a long name and
+ * a custom color, an editor outside any tab stack and an unnamed tab stack.
+ */
+function tabStacksEditorSpecs(activeMember = false): IEditorSpec[] {
+	const auth: ITabStackSpec = { label: 'Auth', color: 'blue' };
+	const docs: ITabStackSpec = { label: 'Documentation and release notes', color: '#d97706' };
+	const tests: ITabStackSpec = { label: '', color: 'green' };
+	return [
+		{ resource: file('/project/src/app/main.ts'), icon: ThemeIcon.fromId(Codicon.symbolFile.id), sticky: true, pinned: true },
+		{ resource: file('/project/src/auth/login.ts'), tabStack: auth, active: activeMember },
+		{ resource: file('/project/src/auth/session.ts'), tabStack: auth, dirty: true },
+		{ resource: file('/project/README.md'), icon: ThemeIcon.fromId(Codicon.markdown.id), tabStack: docs },
+		{ resource: file('/project/package.json'), icon: ThemeIcon.fromId(Codicon.json.id), active: !activeMember },
+		{ resource: file('/project/tests/auth/login.test.ts'), tabStack: tests },
+		{ resource: file('/project/tests/auth/session.test.ts'), tabStack: tests },
+	];
+}
+
+/** Collapsed tab stacks, one of them last, keep only their headers. */
+function collapsedTabStacksEditorSpecs(): IEditorSpec[] {
+	const auth: ITabStackSpec = { label: 'Auth', color: 'purple', collapsed: true };
+	const docs: ITabStackSpec = { label: 'Docs', color: 'orange', collapsed: true };
+	return [
+		{ resource: file('/project/src/app/main.ts'), active: true },
+		{ resource: file('/project/src/auth/login.ts'), tabStack: auth },
+		{ resource: file('/project/src/auth/session.ts'), tabStack: auth },
+		{ resource: file('/project/src/app/index.ts') },
+		{ resource: file('/project/README.md'), icon: ThemeIcon.fromId(Codicon.markdown.id), tabStack: docs },
+	];
+}
+
+/** Unnamed tab stacks, expanded and collapsed, show only their color. */
+function unnamedTabStacksEditorSpecs(): IEditorSpec[] {
+	const red: ITabStackSpec = { label: '', color: 'red' };
+	const cyan: ITabStackSpec = { label: '', color: 'cyan', collapsed: true };
+	const custom: ITabStackSpec = { label: '', color: '#1a2b3c' };
+	return [
+		{ resource: file('/project/src/app/main.ts'), tabStack: red, active: true },
+		{ resource: file('/project/src/app/index.ts'), tabStack: red },
+		{ resource: file('/project/README.md'), icon: ThemeIcon.fromId(Codicon.markdown.id), tabStack: cyan },
+		{ resource: file('/project/package.json'), icon: ThemeIcon.fromId(Codicon.json.id) },
+		{ resource: file('/project/src/app/components/button.tsx'), tabStack: custom },
+	];
+}
+
 function cannotCloseStickyEditorSpecs(): IEditorSpec[] {
 	return [
 		{ resource: file('/project/Changes'), capabilities: EditorInputCapabilities.CannotClose, pinned: true, sticky: true, active: true },
@@ -389,6 +447,8 @@ function populateModel(model: EditorGroupModel, specs: IEditorSpec[], disposable
 	// Open sticky editors first so their indices stay at the front.
 	const ordered = [...specs].sort((a, b) => (a.sticky === b.sticky) ? 0 : a.sticky ? -1 : 1);
 	const inputBySpec = new Map<IEditorSpec, FixtureEditorInput>();
+	const editorsByTabStack = new Map<ITabStackSpec, FixtureEditorInput[]>();
+	const openInSpecOrder = specs.some(spec => spec.tabStack); // show the tabs of a tab stack in the order of their specs
 	for (const spec of ordered) {
 		const input = disposableStore.add(new FixtureEditorInput(spec.resource, {
 			typeId: spec.typeId,
@@ -401,7 +461,20 @@ function populateModel(model: EditorGroupModel, specs: IEditorSpec[], disposable
 			pinned: spec.pinned ?? true,
 			sticky: spec.sticky,
 			active: spec.active,
+			index: openInSpecOrder ? model.count : undefined,
 		});
+
+		if (spec.tabStack) {
+			editorsByTabStack.set(spec.tabStack, [...editorsByTabStack.get(spec.tabStack) ?? [], input]);
+		}
+	}
+
+	// Opened editors never join a tab stack, so the tab stacks are created once all editors are open.
+	for (const [{ label, color, collapsed }, editors] of editorsByTabStack) {
+		const tabStack = model.addEditorsToTabStack(editors).tabStack;
+		if (tabStack) {
+			model.updateTabStack(tabStack.id, { label, color, collapsed });
+		}
 	}
 
 	// Apply multi-selection: the active editor plus any additionally selected ones.
@@ -431,6 +504,7 @@ export function renderEditorTabBarFixture(ctx: ComponentFixtureContext, options:
 	});
 	configurationService.setUserConfiguration(LayoutSettings.MODERN_UI, options.modernUI);
 	configurationService.setUserConfiguration(LayoutSettings.MODERN_UI_EDITOR_TAB_STYLE, options.editorTabStyle ?? ModernUIEditorTabStyle.Connected);
+	configurationService.setUserConfiguration('workbench.editor.enableTabStacks', partOptions.enableTabStacks); // the group model keeps no tab stacks while disabled
 
 	const instantiationService = workbenchInstantiationService({
 		configurationService: () => configurationService,
@@ -490,6 +564,13 @@ export function renderEditorTabBarFixture(ctx: ComponentFixtureContext, options:
 		override isPinned(editorOrIndex: EditorInput | number) { return model.isPinned(editorOrIndex); }
 		override isSticky(editorOrIndex: EditorInput | number) { return model.isSticky(editorOrIndex); }
 		override isSelected(editorOrIndex: EditorInput | number) { return model.isSelected(editorOrIndex); }
+		// An editor group view needs a whole editor part, so these forward to the model and redraw the tabs
+		override get tabStacks() { return model.tabStacks; }
+		override getTabStack(editor: EditorInput) { return model.getTabStack(editor); }
+		override updateTabStack(tabStack: TabStackId, update: ITabStackUpdate) {
+			model.updateTabStack(tabStack, update);
+			titleControl.updateTabStacks();
+		}
 		override createEditorActions(disposables: DisposableStore, menuId = MenuId.EditorTitle) { return createEditorActions(disposables, menuId); }
 		override relayout() { this.relayoutFn(); }
 		override readonly onDidActiveEditorChange = Event.None;
@@ -758,6 +839,20 @@ function createFixtures(modernUI: boolean, additionalThemes: readonly ComponentF
 
 		// Pinned tabs on a separate row combined with compact pinned sizing.
 		PinnedSeparateRowCompact: defineComponentFixture({ render: render(modernUI, { partOptions: { pinnedTabsOnSeparateRow: true, pinnedTabSizing: 'compact' }, editors: stickyEditorSpecs() }) }),
+
+		// --- Tab stacks ---
+
+		// A header before each tab stack and its tabs underlined in its color, after a pinned tab.
+		TabStacksExpanded: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: tabStacksEditorSpecs(), width: 1000 }), additionalThemes }),
+
+		// Collapsed tab stacks, one of them last, keep only their headers.
+		TabStacksCollapsed: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: collapsedTabStacksEditorSpecs() }), additionalThemes }),
+
+		// Unnamed tab stacks show only their color.
+		TabStacksUnnamed: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: unnamedTabStacksEditorSpecs() }), additionalThemes }),
+
+		// The active editor is the first tab of a tab stack, right after its header.
+		TabStacksConnectedActiveMember: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: tabStacksEditorSpecs(true), width: 1000 }), additionalThemes }),
 	};
 }
 

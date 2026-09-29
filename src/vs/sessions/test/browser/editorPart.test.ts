@@ -147,6 +147,41 @@ suite('Sessions - EditorPart', () => {
 		}
 	});
 
+	test('a connected detail tab starts its row flush with the card after a tab stack header that ends the row above', () => {
+		const workbench = appendElement(mainWindow.document.body, 'monaco-workbench agent-sessions-workbench modern-ui-tabs modern-ui-connected-editor-tabs dock-detail-panel');
+		for (const [name, value] of Object.entries({
+			'--vscode-spacing-size20': '2px',
+			'--vscode-cornerRadius-small': '4px',
+			'--vscode-strokeThickness': '1px',
+			'--vscode-editorGroupHeader-tabsBorder': '#445566',
+		})) {
+			workbench.style.setProperty(name, value);
+		}
+		const card = appendElement(appendElement(workbench, 'monaco-grid-view'), 'part editor editor-tabs-multiple');
+		const group = appendElement(appendElement(card, 'content'), 'editor-group-container active');
+		const row = appendElement(appendElement(group, 'title tabs'), 'tabs-and-actions-container wrapping');
+		const tabs = appendElement(appendElement(row, 'monaco-scrollable-element'), 'tabs-container');
+		const header = appendElement(tabs, 'tab-stack-header');
+		const fill = appendElement(appendElement(tabs, 'tab active'), 'tab-fill');
+		const getLeadingEdge = (headerEndsRow: boolean) => {
+			header.classList.toggle('last-in-row', headerEndsRow);
+			const style = mainWindow.getComputedStyle(fill);
+			return { backgroundClip: style.backgroundClip, leftBorder: style.borderLeftColor, leftCorner: style.borderTopLeftRadius };
+		};
+
+		try {
+			assert.deepStrictEqual({
+				rowStart: getLeadingEdge(true),
+				withinRow: getLeadingEdge(false),
+			}, {
+				rowStart: { backgroundClip: 'border-box', leftBorder: 'rgba(0, 0, 0, 0)', leftCorner: '0px' },
+				withinRow: { backgroundClip: 'padding-box', leftBorder: 'rgb(68, 85, 102)', leftCorner: '5px' },
+			});
+		} finally {
+			workbench.remove();
+		}
+	});
+
 	test('constrains the Browser navbar to the editor header height', () => {
 		const workbench = appendElement(mainWindow.document.body, 'monaco-workbench agent-sessions-workbench dock-detail-panel');
 		workbench.style.setProperty('--vscode-spacing-size40', '4px');
