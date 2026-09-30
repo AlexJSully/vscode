@@ -6,8 +6,10 @@
 import './media/multieditortabscontrol.css';
 import { isLinux, isMacintosh, isWindows } from '../../../../base/common/platform.js';
 import { shorten } from '../../../../base/common/labels.js';
-import { EditorResourceAccessor, Verbosity, IEditorPartOptions, SideBySideEditor, DEFAULT_EDITOR_ASSOCIATION, EditorInputCapabilities, IUntypedEditorInput, preventEditorClose, EditorCloseMethod, EditorsOrder, IToolbarActions } from '../../../common/editor.js';
+import { EditorResourceAccessor, Verbosity, IEditorPartOptions, SideBySideEditor, DEFAULT_EDITOR_ASSOCIATION, EditorInputCapabilities, preventEditorClose, EditorCloseMethod, EditorsOrder, IToolbarActions, GroupIdentifier, isResourceDiffEditorInput } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
+import { DiffEditorInput } from '../../../common/editor/diffEditorInput.js';
+import { SideBySideEditorInput } from '../../../common/editor/sideBySideEditorInput.js';
 import { computeEditorAriaLabel } from '../../editor.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { EventType as TouchEventType, GestureEvent, Gesture } from '../../../../base/browser/touch.js';
@@ -43,9 +45,10 @@ import { basename, basenameOrAuthority, extname } from '../../../../base/common/
 import { RunOnceScheduler } from '../../../../base/common/async.js';
 import { IPathService } from '../../../services/path/common/pathService.js';
 import { IPath, win32, posix } from '../../../../base/common/path.js';
-import { coalesce, insert } from '../../../../base/common/arrays.js';
+import { coalesce, distinct, insert } from '../../../../base/common/arrays.js';
+import { findLast, findLastIdx } from '../../../../base/common/arraysFind.js';
 import { isHighContrast } from '../../../../platform/theme/common/theme.js';
-import { isSafari } from '../../../../base/browser/browser.js';
+import { isFirefox, isSafari } from '../../../../base/browser/browser.js';
 import { equals } from '../../../../base/common/objects.js';
 import { EditorActivation, IEditorOptions } from '../../../../platform/editor/common/editor.js';
 import { UNLOCK_GROUP_COMMAND_ID } from './editorCommands.js';
@@ -59,6 +62,8 @@ import { IReadonlyEditorGroupModel, ITabStack, isTabStackPresetColor, TabStackCo
 import { IHostService } from '../../../services/host/browser/host.js';
 import { BugIndicatingError } from '../../../../base/common/errors.js';
 import { applyDragImage } from '../../../../base/browser/ui/dnd/dnd.js';
+import { DataTransfers } from '../../../../base/browser/dnd.js';
+import { extractEditorsDropData, IDraggedResourceEditorInput, LocalSelectionTransfer } from '../../../../platform/dnd/browser/dnd.js';
 import { nextCharLength } from '../../../../base/common/strings.js';
 import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { getDefaultHoverDelegate } from '../../../../base/browser/ui/hover/hoverDelegateFactory.js';
@@ -111,6 +116,70 @@ interface ITabStackHeader extends IDisposable {
 	 * closes with the header.
 	 */
 	readonly bubble: MutableDisposable<TabStackEditor>;
+}
+
+/**
+ * A tab stack header that is dragged to move its tab stack within the tabs
+ * of its group.
+ */
+class DraggedTabStackIdentifier {
+	constructor(readonly groupId: GroupIdentifier, readonly tabStackId: TabStackId) { }
+}
+
+/**
+ * A tab or a tab stack header that a drag is over.
+ */
+type TabsDropSlot =
+	| { readonly kind: 'tab'; readonly element: HTMLElement; readonly tabIndex: number }
+	| { readonly kind: 'tabStackHeader'; readonly element: HTMLElement; readonly tabStack: TabStackId };
+
+/**
+ * What is dragged over the tabs: the header of a tab stack, editors of a
+ * group, or anything else, such as files, tree items or an editor group.
+ */
+type TabsDrag =
+	| { readonly kind: 'tabStack'; readonly groupId: GroupIdentifier; readonly tabStackId: TabStackId }
+	| { readonly kind: 'editors'; readonly groupId: GroupIdentifier; readonly editors: readonly EditorInput[] }
+	| { readonly kind: 'other' };
+
+/**
+ * The tabs or tab stack headers on both sides of where a drag drops, which
+ * show the drop.
+ */
+interface ITabsDropFeedback {
+
+	/**
+	 * The tab or tab stack header before the drop position, if any, or the last
+	 * child of the tabs container, which can be the Add Tab control, for a drop
+	 * on its empty space.
+	 */
+	readonly leftElement: HTMLElement | undefined;
+
+	/**
+	 * The tab or tab stack header after the drop position, if any.
+	 */
+	readonly rightElement: HTMLElement | undefined;
+}
+
+/**
+ * Where a drag over the tabs drops, and the drop feedback that shows it.
+ */
+interface ITabsDropTarget extends ITabsDropFeedback {
+
+	/**
+	 * The index of the tab that the drop inserts before, counted before anything
+	 * moves. An editor group dropped after the last tab gets the number of
+	 * editors of the group.
+	 */
+	readonly tabIndex: number;
+
+	/**
+	 * The tab stack that dropped editors belong to afterwards: `null` for
+	 * none, and `undefined` when where they land decides. Editors of another
+	 * group belong to a tab stack afterwards only when dropped between its
+	 * tabs or on its start slot.
+	 */
+	readonly tabStack?: TabStackId | null;
 }
 
 export class MultiEditorTabsControl extends EditorTabsControl {
@@ -166,6 +235,7 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 	private readonly tabs: HTMLElement[] = [];
 	private readonly tabStackHeaders = this._register(new DisposableMap<TabStackId, ITabStackHeader>());
 	private readonly tabStackHeaderMenuActionRunner = this._register(new ActionRunner());
+	private readonly tabStackTransfer = LocalSelectionTransfer.getInstance<DraggedTabStackIdentifier>();
 
 	private dimensions: IEditorTitleControlDimensions & { used?: Dimension } = {
 		container: Dimension.None,
@@ -560,45 +630,27 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 					return;
 				}
 
-				// Return if transfer is unsupported
-				if (!this.isSupportedDropTransfer(e)) {
-					if (e.dataTransfer) {
-						e.dataTransfer.dropEffect = 'none';
-					}
-
-					return;
-				}
-
-				// Update the dropEffect to "copy" if there is no local data to be dragged because
-				// in that case we can only copy the data into and not move it from its source
-				if (!this.editorTransfer.hasData(DraggedEditorIdentifier.prototype)) {
-					if (e.dataTransfer) {
-						e.dataTransfer.dropEffect = 'copy';
-					}
-				}
-
-				this.updateDropFeedback(tabsContainer, true, e);
+				this.onTabsDragEnter(e);
 			},
 
-			onDragLeave: e => {
-				this.updateDropFeedback(tabsContainer, false, e);
+			onDragLeave: () => {
+				this.updateDropTarget(undefined);
 				tabsContainer.classList.remove('scroll');
 			},
 
 			onDragEnd: e => {
-				this.updateDropFeedback(tabsContainer, false, e);
+				this.updateDropTarget(undefined);
 				tabsContainer.classList.remove('scroll');
 
 				this.onGroupDragEnd(e, lastDragEvent, tabsContainer, isNewWindowOperation);
 			},
 
 			onDrop: e => {
-				this.updateDropFeedback(tabsContainer, false, e);
+				this.updateDropTarget(undefined);
 				tabsContainer.classList.remove('scroll');
 
 				if (e.target === tabsContainer) {
-					const isGroupTransfer = this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype);
-					this.onDrop(e, isGroupTransfer ? this.groupView.count : this.tabsModel.count, tabsContainer);
+					this.onDrop(e, this.computeTabsDropTarget(e), tabsContainer);
 				}
 			}
 		}));
@@ -1353,6 +1405,7 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		// Drag & Drop support
 		let lastDragEvent: DragEvent | undefined = undefined;
 		let isNewWindowOperation = false;
+		const slot: TabsDropSlot = { kind: 'tab', element: tab, tabIndex };
 		disposables.add(new DragAndDropObserver(tab, {
 			onDragStart: e => {
 				const editor = this.tabsModel.getEditorByIndex(tabIndex);
@@ -1387,34 +1440,14 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 				// Apply some datatransfer types to allow for dragging the element outside of the application
 				this.doFillResourceDataTransfers(selectedEditors, e, isNewWindowOperation);
 
-				scheduleAtNextAnimationFrame(getWindow(this.parent), () => this.updateDropFeedback(tab, false, e, tabIndex));
+				scheduleAtNextAnimationFrame(getWindow(this.parent), () => this.updateDropTarget(undefined));
 			},
 
 			onDrag: e => {
 				lastDragEvent = e;
 			},
 
-			onDragEnter: e => {
-
-				// Return if transfer is unsupported
-				if (!this.isSupportedDropTransfer(e)) {
-					if (e.dataTransfer) {
-						e.dataTransfer.dropEffect = 'none';
-					}
-
-					return;
-				}
-
-				// Update the dropEffect to "copy" if there is no local data to be dragged because
-				// in that case we can only copy the data into and not move it from its source
-				if (!this.editorTransfer.hasData(DraggedEditorIdentifier.prototype)) {
-					if (e.dataTransfer) {
-						e.dataTransfer.dropEffect = 'copy';
-					}
-				}
-
-				this.updateDropFeedback(tab, true, e, tabIndex);
-			},
+			onDragEnter: e => this.onTabsDragEnter(e, slot),
 
 			onDragOver: (e, dragDuration) => {
 				if (dragDuration >= MultiEditorTabsControl.DRAG_OVER_OPEN_TAB_THRESHOLD) {
@@ -1424,11 +1457,11 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 					}
 				}
 
-				this.updateDropFeedback(tab, true, e, tabIndex);
+				this.updateDropTarget(this.computeTabsDropTarget(e, slot));
 			},
 
 			onDragEnd: async e => {
-				this.updateDropFeedback(tab, false, e, tabIndex);
+				this.updateDropTarget(undefined);
 				const draggedEditors = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);
 				this.editorTransfer.clearData(DraggedEditorIdentifier.prototype);
 
@@ -1458,15 +1491,7 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			},
 
 			onDrop: e => {
-				this.updateDropFeedback(tab, false, e, tabIndex);
-
-				// compute the target index
-				let targetIndex = tabIndex;
-				if (this.getTabDragOverLocation(e, tab) === 'right') {
-					targetIndex++;
-				}
-
-				this.onDrop(e, targetIndex, tabsContainer);
+				this.onDrop(e, this.computeTabsDropTarget(e, slot), tabsContainer);
 			}
 		}));
 
@@ -1474,6 +1499,11 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 	}
 
 	private isSupportedDropTransfer(e: DragEvent): boolean {
+		const drag = this.getTabsDrag();
+		if (drag.kind === 'tabStack') {
+			return this.acceptsTabStack(drag.groupId); // tab stacks only move within the tabs of their group
+		}
+
 		if (this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype)) {
 			const data = this.groupTransfer.getData(DraggedEditorGroupIdentifier.prototype);
 			if (Array.isArray(data) && data.length > 0) {
@@ -1497,25 +1527,48 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		return false;
 	}
 
-	private updateDropFeedback(element: HTMLElement, isDND: boolean, e: DragEvent, tabIndex?: number): void {
-		const isTab = (typeof tabIndex === 'number');
-
-		let dropTarget;
-		if (isDND) {
-			if (isTab) {
-				dropTarget = this.computeDropTarget(e, tabIndex, element);
-			} else {
-				dropTarget = { leftElement: element.lastElementChild as HTMLElement, rightElement: undefined };
+	/**
+	 * Sets the drop effect of a drag that enters the tabs and returns whether
+	 * the tabs support what it drags.
+	 */
+	private updateDropEffect(e: DragEvent): boolean {
+		if (!this.isSupportedDropTransfer(e)) {
+			if (e.dataTransfer) {
+				e.dataTransfer.dropEffect = 'none';
 			}
-		} else {
-			dropTarget = undefined;
+
+			return false;
 		}
 
-		this.updateDropTarget(dropTarget);
+		// Without local editors only a copy is possible, and a tab stack only moves
+		const drag = this.getTabsDrag();
+		if (drag.kind !== 'editors' && e.dataTransfer) {
+			e.dataTransfer.dropEffect = drag.kind === 'tabStack' ? 'move' : 'copy';
+		}
+
+		return true;
 	}
 
-	private dropTarget: { leftElement: HTMLElement | undefined; rightElement: HTMLElement | undefined } | undefined;
-	private updateDropTarget(newTarget: { leftElement: HTMLElement | undefined; rightElement: HTMLElement | undefined } | undefined): void {
+	/**
+	 * Shows where a drag that enters a tab, a tab stack header or, without a
+	 * slot, the empty space of the tabs drops, if the tabs support it.
+	 */
+	private onTabsDragEnter(e: DragEvent, slot?: TabsDropSlot): void {
+		if (this.updateDropEffect(e)) {
+			this.updateDropTarget(this.computeTabsDropTarget(e, slot));
+		}
+	}
+
+	/**
+	 * Returns whether a tab stack header of the group can drop on these tabs,
+	 * which it can only on the tabs of its group that show tab stacks.
+	 */
+	private acceptsTabStack(groupId: GroupIdentifier): boolean {
+		return groupId === this.groupView.id && isTabStacksEnabled(this.groupsView.partOptions) && !(this.tabsModel instanceof StickyEditorGroupModel);
+	}
+
+	private dropTarget: ITabsDropFeedback | undefined;
+	private updateDropTarget(newTarget: ITabsDropFeedback | undefined): void {
 		const oldTargets = this.dropTarget;
 		if (oldTargets === newTarget || oldTargets && newTarget && oldTargets.leftElement === newTarget.leftElement && oldTargets.rightElement === newTarget.rightElement) {
 			return;
@@ -1544,26 +1597,223 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		return offsetXRelativeToParent <= rect.width / 2 ? 'left' : 'right';
 	}
 
-	private computeDropTarget(e: DragEvent, tabIndex: number, targetTab: HTMLElement): { leftElement: HTMLElement | undefined; rightElement: HTMLElement | undefined } | undefined {
-		const isLeftSideOfTab = this.getTabDragOverLocation(e, targetTab) === 'left';
-		const isLastTab = tabIndex === this.tabsModel.count - 1;
-		const isFirstTab = tabIndex === 0;
-
-		// Before first tab
-		if (isLeftSideOfTab && isFirstTab) {
-			return { leftElement: undefined, rightElement: targetTab };
+	/**
+	 * Returns what is dragged, as far as the tabs tell drags apart.
+	 */
+	private getTabsDrag(): TabsDrag {
+		const [draggedTabStack] = this.tabStackTransfer.getData(DraggedTabStackIdentifier.prototype) ?? [];
+		if (draggedTabStack) {
+			return { kind: 'tabStack', groupId: draggedTabStack.groupId, tabStackId: draggedTabStack.tabStackId };
 		}
 
-		// After last tab
-		if (!isLeftSideOfTab && isLastTab) {
-			return { leftElement: targetTab, rightElement: undefined };
+		const draggedEditors = this.editorTransfer.getData(DraggedEditorIdentifier.prototype) ?? [];
+		if (draggedEditors.length > 0) {
+			return { kind: 'editors', groupId: draggedEditors[0].identifier.groupId, editors: draggedEditors.map(draggedEditor => draggedEditor.identifier.editor) };
 		}
 
-		// Between two tabs
-		const tabBefore = isLeftSideOfTab ? targetTab.previousElementSibling : targetTab;
-		const tabAfter = isLeftSideOfTab ? targetTab : targetTab.nextElementSibling;
+		return { kind: 'other' };
+	}
 
-		return { leftElement: tabBefore as HTMLElement, rightElement: tabAfter as HTMLElement };
+	/**
+	 * Computes where a drag over a tab, over a tab stack header or, without a
+	 * slot, over the empty space of the tabs drops. Returns `undefined` for a
+	 * tab stack header that cannot drop there or would not move.
+	 */
+	private computeTabsDropTarget(e: DragEvent, slot?: TabsDropSlot): ITabsDropTarget | undefined {
+		const drag = this.getTabsDrag();
+		if (drag.kind === 'tabStack') {
+			return this.acceptsTabStack(drag.groupId) ? this.computeTabStackDropTarget(e, drag.tabStackId, slot) : undefined;
+		}
+
+		// After the last tab
+		if (!slot) {
+			return {
+				tabIndex: this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype) ? this.groupView.count : this.tabsModel.count,
+				tabStack: drag.kind === 'editors' ? this.getTabStackOfDroppedEditors(drag, this.tabsModel.count, false) : undefined,
+				leftElement: (this.tabsContainer?.lastElementChild ?? undefined) as HTMLElement | undefined,
+				rightElement: undefined
+			};
+		}
+
+		// The left half of the first tab of a tab stack is its start slot
+		const isLeft = this.getTabDragOverLocation(e, slot.element) === 'left';
+		if (slot.kind === 'tab') {
+			return this.computeDropTargetBefore(drag, isLeft ? slot.tabIndex : slot.tabIndex + 1, isLeft && this.isFirstTabOfTabStack(slot.tabIndex));
+		}
+
+		// The right half of a header is the start slot of an expanded tab stack, or after a collapsed one
+		const tabStack = this.findTabStack(slot.tabStack);
+		if (!tabStack) {
+			return undefined;
+		}
+
+		if (isLeft || !tabStack.collapsed) {
+			return this.computeDropTargetBefore(drag, this.getFirstTabIndexOfTabStack(tabStack), !isLeft);
+		}
+
+		return this.computeDropTargetBefore(drag, this.getTabIndexAfterTabStack(tabStack), false);
+	}
+
+	/**
+	 * Computes the drop target of editors, or of anything else that opens
+	 * editors, before the tab at the index. Editors that open, such as files,
+	 * never join a tab stack, so a drop between the tabs of a tab stack moves
+	 * after it, and one on its start slot before it.
+	 */
+	private computeDropTargetBefore(drag: TabsDrag, tabIndex: number, isStartSlot: boolean): ITabsDropTarget {
+		if (drag.kind !== 'editors') {
+			const tabStackBefore = this.getShownTabStackAt(tabIndex - 1);
+			if (tabStackBefore && tabStackBefore.id === this.getShownTabStackAt(tabIndex)?.id) {
+				tabIndex = this.getTabIndexAfterTabStack(tabStackBefore);
+			}
+
+			return { tabIndex, ...this.getDropFeedback(tabIndex, false) };
+		}
+
+		return { tabIndex, tabStack: this.getTabStackOfDroppedEditors(drag, tabIndex, isStartSlot), ...this.getDropFeedback(tabIndex, isStartSlot) };
+	}
+
+	/**
+	 * Returns the tab stack that editors dropped before the tab at the index
+	 * join, `null` for none, or `undefined` to let where they land decide.
+	 */
+	private getTabStackOfDroppedEditors(drag: Extract<TabsDrag, { kind: 'editors' }>, tabIndex: number, isStartSlot: boolean): TabStackId | null | undefined {
+		const tabStackBefore = this.getShownTabStackAt(tabIndex - 1);
+		const tabStackAfter = this.getShownTabStackAt(tabIndex);
+		if (isStartSlot) {
+			return tabStackAfter?.id;
+		}
+
+		if (tabStackBefore && tabStackBefore.id === tabStackAfter?.id) {
+			return tabStackBefore.id;
+		}
+
+		if (drag.groupId === this.groupView.id) {
+			if (tabStackBefore && !tabStackBefore.collapsed && drag.editors.every(editor => this.tabsModel.getTabStack(editor)?.id === tabStackBefore.id)) {
+				return tabStackBefore.id;
+			}
+
+			// A whole tab stack moves as one, as when its header is dragged
+			const draggedTabStack = this.tabsModel.getTabStack(drag.editors[0]);
+			if (draggedTabStack?.editors.length === drag.editors.length && drag.editors.every(editor => this.tabsModel.getTabStack(editor)?.id === draggedTabStack.id)) {
+				return undefined;
+			}
+		}
+
+		return tabStackBefore || tabStackAfter ? null : undefined;
+	}
+
+	/**
+	 * Computes where a dragged tab stack header drops: before or after another
+	 * tab stack, depending on which half of that tab stack the drag is over,
+	 * after the sticky tabs, next to any other tab, or after the last tab.
+	 * Returns `undefined` over the tab stack itself and where it would not move.
+	 */
+	private computeTabStackDropTarget(e: DragEvent, tabStackId: TabStackId, slot: TabsDropSlot | undefined): ITabsDropTarget | undefined {
+		const tabStack = this.findTabStack(tabStackId);
+		if (!tabStack) {
+			return undefined;
+		}
+
+		let tabIndex = this.tabsModel.count;
+		if (slot) {
+			const otherTabStack = slot.kind === 'tabStackHeader' ? this.findTabStack(slot.tabStack) : this.getShownTabStackAt(slot.tabIndex);
+			if (otherTabStack) {
+				tabIndex = this.isBeforeMiddleOfTabStack(e, slot.element, otherTabStack) ? this.getFirstTabIndexOfTabStack(otherTabStack) : this.getTabIndexAfterTabStack(otherTabStack);
+			} else if (slot.kind === 'tabStackHeader') {
+				return undefined;
+			} else if (this.tabsModel.isSticky(slot.tabIndex)) {
+				tabIndex = this.tabsModel.stickyCount;
+			} else {
+				tabIndex = this.getTabDragOverLocation(e, slot.element) === 'left' ? slot.tabIndex : slot.tabIndex + 1;
+			}
+		}
+
+		const start = this.getFirstTabIndexOfTabStack(tabStack);
+		if (tabIndex >= start && tabIndex <= start + tabStack.editors.length) {
+			return undefined;
+		}
+
+		return { tabIndex, ...this.getDropFeedback(tabIndex, false) };
+	}
+
+	/**
+	 * Returns whether a drag over the header or a tab of the tab stack is over
+	 * its first half: by position on one row, and by the order of its header and
+	 * shown tabs when they wrap onto more rows.
+	 */
+	private isBeforeMiddleOfTabStack(e: DragEvent, element: HTMLElement, tabStack: ITabStack): boolean {
+		const header = this.tabStackHeaders.get(tabStack.id)?.element;
+		if (!header) {
+			return true;
+		}
+
+		const slots = [header, ...this.tabs.slice(this.getFirstTabIndexOfTabStack(tabStack), this.getTabIndexAfterTabStack(tabStack)).filter(tab => this.isTabShown(tab))];
+		const lastSlot = slots[slots.length - 1];
+		const index = slots.indexOf(element);
+		if (header.offsetTop === lastSlot.offsetTop || index < 0) {
+			return e.clientX < (header.getBoundingClientRect().left + lastSlot.getBoundingClientRect().right) / 2;
+		}
+
+		const middle = (slots.length - 1) / 2;
+
+		return index < middle || (index === middle && this.getTabDragOverLocation(e, element) === 'left');
+	}
+
+	/**
+	 * Returns the tabs or tab stack headers on both sides of a drop before the
+	 * tab at the index. Before the first tab of a tab stack, that is before
+	 * its header unless the drop is on its start slot, and after the tabs of
+	 * a collapsed tab stack, that is after its header.
+	 */
+	private getDropFeedback(tabIndex: number, isStartSlot: boolean): ITabsDropFeedback {
+		const tabStackAfter = this.getShownTabStackAt(tabIndex);
+		const headerAfter = tabStackAfter ? this.tabStackHeaders.get(tabStackAfter.id)?.element : undefined;
+		const tabAfter = this.tabs.at(tabIndex);
+		if (isStartSlot) {
+			return { leftElement: headerAfter, rightElement: tabAfter };
+		}
+
+		const tabStackBefore = this.getShownTabStackAt(tabIndex - 1);
+		const tabBefore = tabIndex > 0 ? this.tabs.at(tabIndex - 1) : undefined;
+
+		return {
+			leftElement: tabBefore && !this.isTabShown(tabBefore) && tabStackBefore ? this.tabStackHeaders.get(tabStackBefore.id)?.element : tabBefore,
+			rightElement: tabStackAfter && this.isFirstTabOfTabStack(tabIndex) ? headerAfter : tabAfter
+		};
+	}
+
+	/**
+	 * Returns the shown tab stack of the editor of the tab at the index.
+	 */
+	private getShownTabStackAt(tabIndex: number): ITabStack | undefined {
+		const editor = tabIndex >= 0 ? this.tabsModel.getEditorByIndex(tabIndex) : undefined;
+
+		return editor ? this.getShownTabStack(editor) : undefined;
+	}
+
+	/**
+	 * Returns whether the tab at the index is the first tab of a shown tab
+	 * stack.
+	 */
+	private isFirstTabOfTabStack(tabIndex: number): boolean {
+		const tabStack = this.getShownTabStackAt(tabIndex);
+
+		return !!tabStack && tabStack.editors[0] === this.tabsModel.getEditorByIndex(tabIndex);
+	}
+
+	/**
+	 * Returns the index of the first tab of the tab stack.
+	 */
+	private getFirstTabIndexOfTabStack(tabStack: ITabStack): number {
+		return this.tabsModel.indexOf(tabStack.editors[0]);
+	}
+
+	/**
+	 * Returns the index of the tab right after the tabs of the tab stack.
+	 */
+	private getTabIndexAfterTabStack(tabStack: ITabStack): number {
+		return this.tabsModel.indexOf(tabStack.editors[tabStack.editors.length - 1]) + 1;
 	}
 
 	private async selectEditor(editor: EditorInput): Promise<void> {
@@ -2191,7 +2441,7 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 
 	private createTabStackHeader(tabStackId: TabStackId, tabsScrollbar: ScrollableElement): ITabStackHeader {
 		const label = $('span.tab-stack-header-label');
-		const element = $('.tab-stack-header', { role: 'tab', 'aria-selected': 'false', tabindex: '-1' }, $('.tab-stack-header-chip', undefined, label));
+		const element = $('.tab-stack-header', { role: 'tab', 'aria-selected': 'false', tabindex: '-1', draggable: true }, $('.tab-stack-header-chip', undefined, label));
 		const listeners = this.registerTabStackHeaderListeners(element, tabStackId, tabsScrollbar);
 		const bubble = new MutableDisposable<TabStackEditor>();
 
@@ -2203,13 +2453,20 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 				bubble.dispose();
 				listeners.dispose();
 				element.remove();
+
+				// Disposing the header also drops its drag end, so the drag of its tab stack ends here
+				const [draggedTabStack] = this.tabStackTransfer.getData(DraggedTabStackIdentifier.prototype) ?? [];
+				if (draggedTabStack?.groupId === this.groupView.id && draggedTabStack.tabStackId === tabStackId) {
+					this.tabStackTransfer.clearData(DraggedTabStackIdentifier.prototype);
+				}
 			}
 		};
 	}
 
 	/**
-	 * Registers the hover and the mouse, touch and keyboard input of a tab
-	 * stack header, which look up the tab stack by its id whenever they run.
+	 * Registers the hover and the mouse, touch, keyboard and drag and drop
+	 * input of a tab stack header, which look up the tab stack by its id
+	 * whenever they run.
 	 */
 	private registerTabStackHeaderListeners(element: HTMLElement, tabStackId: TabStackId, tabsScrollbar: ScrollableElement): IDisposable {
 		const disposables = new DisposableStore();
@@ -2272,7 +2529,55 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			this.onTabStackHeaderContextMenu(tabStackId, e, element);
 		}));
 
+		disposables.add(this.registerTabStackHeaderDragAndDrop(element, tabStackId));
+
 		return disposables;
+	}
+
+	/**
+	 * Registers dragging a tab stack header to move its tab stack, and
+	 * dropping before or after the header.
+	 */
+	private registerTabStackHeaderDragAndDrop(element: HTMLElement, tabStackId: TabStackId): IDisposable {
+		const slot: TabsDropSlot = { kind: 'tabStackHeader', element, tabStack: tabStackId };
+
+		return new DragAndDropObserver(element, {
+			onDragStart: e => this.onTabStackHeaderDragStart(e, tabStackId, element),
+			onDragEnter: e => this.onTabsDragEnter(e, slot),
+			onDragOver: e => this.updateDropTarget(this.computeTabsDropTarget(e, slot)),
+			onDragEnd: () => {
+				this.tabStackTransfer.clearData(DraggedTabStackIdentifier.prototype);
+				this.updateDropTarget(undefined);
+			},
+			onDrop: e => this.onDrop(e, this.computeTabsDropTarget(e, slot), assertReturnsDefined(this.tabsContainer))
+		});
+	}
+
+	/**
+	 * Starts to drag the tab stack of a header, which only the tabs of its group
+	 * take: it carries no resources for the editor area and other windows, and
+	 * only on Firefox a text that text inputs can take.
+	 */
+	private onTabStackHeaderDragStart(e: DragEvent, tabStackId: TabStackId, header: HTMLElement): void {
+		const tabStack = this.findTabStack(tabStackId);
+		if (!tabStack) {
+			return;
+		}
+
+		this.tabStackTransfer.setData([new DraggedTabStackIdentifier(this.groupView.id, tabStackId)], DraggedTabStackIdentifier.prototype);
+
+		if (e.dataTransfer) {
+			e.dataTransfer.effectAllowed = 'move';
+
+			const label = this.getTabStackHeaderHover(tabStack);
+
+			// Firefox: requires to set a text data transfer to get going
+			if (isFirefox) {
+				e.dataTransfer.setData(DataTransfers.TEXT, label);
+			}
+
+			applyDragImage(e, header, label);
+		}
 	}
 
 	private redrawTabStackHeader(header: ITabStackHeader, tabStack: ITabStack): void {
@@ -3121,20 +3426,31 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		return !!findParentWithClass(element, 'action-item', 'tab');
 	}
 
-	private async onDrop(e: DragEvent, targetTabIndex: number, tabsContainer: HTMLElement): Promise<void> {
+	private async onDrop(e: DragEvent, dropTarget: ITabsDropTarget | undefined, tabsContainer: HTMLElement): Promise<void> {
 		EventHelper.stop(e, true);
 
-		this.updateDropFeedback(tabsContainer, false, e, targetTabIndex);
+		this.updateDropTarget(undefined);
 		tabsContainer.classList.remove('scroll');
 
-		let targetEditorIndex = this.tabsModel instanceof UnstickyEditorGroupModel ? targetTabIndex + this.groupView.stickyCount : targetTabIndex;
+		if (!dropTarget) {
+			return; // a tab stack header that cannot drop here or would not move
+		}
+
+		let targetEditorIndex = this.tabsModel instanceof UnstickyEditorGroupModel ? dropTarget.tabIndex + this.groupView.stickyCount : dropTarget.tabIndex;
 		const options: IEditorOptions = {
 			sticky: this.tabsModel instanceof StickyEditorGroupModel && this.tabsModel.stickyCount === targetEditorIndex,
 			index: targetEditorIndex
 		};
 
+		// Check for tab stack transfer
+		const drag = this.getTabsDrag();
+		if (drag.kind === 'tabStack') {
+			this.moveTabStackBefore(drag.tabStackId, targetEditorIndex);
+			this.tabStackTransfer.clearData(DraggedTabStackIdentifier.prototype);
+		}
+
 		// Check for group transfer
-		if (this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype)) {
+		else if (this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype)) {
 			const data = this.groupTransfer.getData(DraggedEditorGroupIdentifier.prototype);
 			if (Array.isArray(data) && data.length > 0) {
 				const sourceGroup = this.editorPartsView.getGroup(data[0].identifier);
@@ -3157,7 +3473,26 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 			const data = this.editorTransfer.getData(DraggedEditorIdentifier.prototype);
 			if (Array.isArray(data) && data.length > 0) {
 				const sourceGroup = this.editorPartsView.getGroup(data[0].identifier.groupId);
-				if (sourceGroup) {
+				const editors = data.map(de => de.identifier.editor);
+
+				if (sourceGroup === this.groupView && this.isUnstickingTabStackDrop(targetEditorIndex)) {
+					for (const editor of editors) {
+						this.groupView.unstickEditor(editor);
+					}
+				}
+
+				// Editors of this group move together into the tab stack that the drop decided
+				if (sourceGroup === this.groupView && this.canMoveEditorsWithinGroup(editors, targetEditorIndex)) {
+					const editorsBefore = editors.filter(editor => {
+						const index = this.groupView.getIndexOfEditor(editor);
+						return index >= 0 && index < targetEditorIndex;
+					});
+					this.groupView.moveEditorsWithinGroup(editors, targetEditorIndex - editorsBefore.length, dropTarget.tabStack);
+				}
+
+				// Otherwise editors move or copy one by one into the tab stack that the drop decided
+				else if (sourceGroup) {
+					const internalOptions = { tabStack: dropTarget.tabStack };
 					for (const de of data) {
 						const editor = de.identifier.editor;
 
@@ -3166,20 +3501,20 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 							continue;
 						}
 
-						// Keep the same order when moving / copying editors within the same group
-						const sourceEditorIndex = sourceGroup.getIndexOfEditor(editor);
-						if (sourceGroup === this.groupView && sourceEditorIndex < targetEditorIndex) {
+						// An editor that the group has already moves within it, so it does not count before the drop
+						const existingEditorIndex = this.groupView.getIndexOfEditor(editor);
+						if (existingEditorIndex >= 0 && existingEditorIndex < targetEditorIndex) {
 							targetEditorIndex--;
 						}
 
 						if (this.isMoveOperation(e, de.identifier.groupId, editor)) {
-							sourceGroup.moveEditor(editor, this.groupView, { ...options, index: targetEditorIndex });
+							sourceGroup.moveEditor(editor, this.groupView, { ...options, index: targetEditorIndex }, internalOptions);
 
 							if (this.tabsModel instanceof UnstickyEditorGroupModel && this.groupView.isSticky(editor)) {
 								this.groupView.unstickEditor(editor);
 							}
 						} else {
-							sourceGroup.copyEditor(editor, this.groupView, { ...options, index: targetEditorIndex });
+							sourceGroup.copyEditor(editor, this.groupView, { ...options, index: targetEditorIndex }, internalOptions);
 						}
 
 						targetEditorIndex++;
@@ -3195,16 +3530,16 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		else if (this.treeItemsTransfer.hasData(DraggedTreeItemsIdentifier.prototype)) {
 			const data = this.treeItemsTransfer.getData(DraggedTreeItemsIdentifier.prototype);
 			if (Array.isArray(data) && data.length > 0) {
-				const editors: IUntypedEditorInput[] = [];
+				const editors: IDraggedResourceEditorInput[] = [];
 				for (const id of data) {
 					const dataTransferItem = await this.treeViewsDragAndDropService.removeDragOperationTransfer(id.identifier);
 					if (dataTransferItem) {
-						const treeDropData = await extractTreeDropData(dataTransferItem);
-						editors.push(...treeDropData.map(editor => ({ ...editor, options: { ...editor.options, pinned: true, index: targetEditorIndex } })));
+						editors.push(...await extractTreeDropData(dataTransferItem));
 					}
 				}
 
-				this.editorService.openEditors(editors, this.groupView, { validateTrust: true });
+				const index = this.moveDroppedEditorsOfGroup(editors, dropTarget, targetEditorIndex);
+				this.editorService.openEditors(editors.map(editor => ({ ...editor, options: { ...editor.options, pinned: true, index } })), this.groupView, { validateTrust: true });
 			}
 
 			this.treeItemsTransfer.clearData(DraggedTreeItemsIdentifier.prototype);
@@ -3213,8 +3548,158 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		// Check for URI transfer
 		else {
 			const dropHandler = this.instantiationService.createInstance(ResourcesDropHandler, { allowWorkspaceOpen: false });
-			dropHandler.handleDrop(e, getWindow(this.parent), () => this.groupView, () => this.groupView.focus(), options);
+
+			// The data of a drop can only be read while its event is handled
+			const index = this.moveDroppedEditorsOfGroup(extractEditorsDropData(e), dropTarget, targetEditorIndex, options.sticky);
+			dropHandler.handleDrop(e, getWindow(this.parent), () => this.groupView, () => this.groupView.focus(), { ...options, index });
 		}
+	}
+
+	/**
+	 * Moves the editors that the group has already for dropped editors, such as
+	 * files, next to each other in drop order to the drop before the editor at
+	 * the index, counted before anything moves, the way a drop of their tabs
+	 * moves them. Returns the index to open the dropped editors at: the group
+	 * opens the first of them at that index and the others after it, so that
+	 * the editors that it does not have yet open between them in drop order.
+	 * Otherwise, such as without tab stacks, on or among the sticky tabs, or
+	 * with sticky editors that stay sticky, the group moves the first dropped
+	 * editor itself when it opens it.
+	 *
+	 * @param sticky whether the dropped editors open as pinned tabs.
+	 */
+	private moveDroppedEditorsOfGroup(droppedEditors: readonly IDraggedResourceEditorInput[], dropTarget: ITabsDropTarget, editorIndex: number, sticky?: boolean): number {
+		const editorsOfDroppedEditors = droppedEditors.map(droppedEditor => this.findEditorOfDroppedEditor(droppedEditor));
+		const editors = distinct(coalesce(editorsOfDroppedEditors));
+		if (editors.length === 0) {
+			return editorIndex;
+		}
+
+		const tabStack = this.getTabStackOfDroppedEditorsOfGroup(editors, editorsOfDroppedEditors, dropTarget);
+
+		// The editors land before the first other editor at or after the index, which unpinning editors does not move
+		const editorAfter = this.groupView.getEditors(EditorsOrder.SEQUENTIAL).slice(editorIndex).find(editor => !editors.includes(editor));
+
+		// Sticky editors dropped on the other tabs are unstuck: always on the row of the other tabs,
+		// and otherwise where a drop of their tabs unsticks them too
+		if (this.tabsModel instanceof UnstickyEditorGroupModel || this.isUnstickingTabStackDrop(editorIndex)) {
+			for (const editor of editors) {
+				this.groupView.unstickEditor(editor);
+			}
+		}
+
+		const otherEditors = this.groupView.getEditors(EditorsOrder.SEQUENTIAL).filter(editor => !editors.includes(editor));
+		const index = editorAfter ? otherEditors.indexOf(editorAfter) : otherEditors.length;
+		if (this.canMoveEditorsWithinGroup(editors, index)) {
+			this.groupView.moveEditorsWithinGroup(editors, index, tabStack);
+
+			// Editors move in the order of their tabs, and moving them into drop order within their run keeps their tab stack
+			for (const [offset, editor] of editors.entries()) {
+				if (this.groupView.getIndexOfEditor(editor) !== index + offset) {
+					this.groupView.moveEditorsWithinGroup([editor], index + offset);
+				}
+			}
+
+			return index;
+		}
+
+		// The group moves the first dropped editor to the index that it opens it at, so only the others move here, in drop order
+		const firstEditor = editorsOfDroppedEditors[0];
+		const laterEditors = firstEditor ? editors.slice(1) : editors;
+		for (const editor of laterEditors) {
+			this.groupView.moveEditor(editor, this.groupView, { index: this.getIndexToMoveBefore(editor, editorAfter), sticky });
+		}
+
+		return firstEditor ? this.getIndexToMoveBefore(firstEditor, laterEditors.at(0) ?? editorAfter) : this.groupView.getIndexOfEditor(laterEditors[0]);
+	}
+
+	/**
+	 * Returns the tab stack that the editors of the group for dropped editors
+	 * join, as for a drop of their tabs, from the tabs before anything moves.
+	 * Editors that the group does not have yet open outside of tab stacks, so
+	 * the editors leave their tab stack where one of those opens between them,
+	 * or before them when they stay at the end of their tab stack.
+	 *
+	 * @param editorsOfDroppedEditors the editor of the group for each dropped
+	 * editor in drop order, if the group has it already.
+	 */
+	private getTabStackOfDroppedEditorsOfGroup(editors: readonly EditorInput[], editorsOfDroppedEditors: readonly (EditorInput | undefined)[], dropTarget: ITabsDropTarget): TabStackId | null | undefined {
+		const tabStack = this.getTabStackOfDroppedEditors({ kind: 'editors', groupId: this.groupView.id, editors }, dropTarget.tabIndex, false);
+		const firstIndex = typeof tabStack === 'string' ? 0 : editorsOfDroppedEditors.findIndex(editor => !!editor);
+		const lastIndex = findLastIdx(editorsOfDroppedEditors, editor => !!editor);
+
+		return tabStack !== null && editorsOfDroppedEditors.slice(firstIndex, lastIndex).includes(undefined) ? null : tabStack;
+	}
+
+	/**
+	 * Returns the index that moving an editor of the group to right before
+	 * another one, or to the end without one, moves it to.
+	 */
+	private getIndexToMoveBefore(editor: EditorInput, editorAfter: EditorInput | undefined): number {
+		const index = editorAfter ? this.groupView.getIndexOfEditor(editorAfter) : this.groupView.count;
+
+		return this.groupView.getIndexOfEditor(editor) < index ? index - 1 : index;
+	}
+
+	/**
+	 * Returns the editor of the group that opening the dropped editor reuses:
+	 * the first editor that matches it, or else the last side by side editor
+	 * that matches it on both sides. Only a diff editor matches a dropped diff
+	 * editor.
+	 */
+	private findEditorOfDroppedEditor(droppedEditor: IDraggedResourceEditorInput | undefined): EditorInput | undefined {
+		const editors = this.groupView.getEditors(EditorsOrder.SEQUENTIAL);
+		if (isResourceDiffEditorInput(droppedEditor)) {
+			return editors.find(editor => editor instanceof DiffEditorInput && editor.matches(droppedEditor));
+		}
+
+		if (!droppedEditor?.resource) {
+			return undefined;
+		}
+
+		return editors.find(editor => editor.matches(droppedEditor))
+			?? findLast(editors, editor => editor instanceof SideBySideEditorInput && editor.primary.matches(droppedEditor) && editor.secondary.matches(droppedEditor));
+	}
+
+	/**
+	 * Moves a tab stack to right before the editor at the index of the group,
+	 * counted before the move, or to the end for the number of editors.
+	 */
+	private moveTabStackBefore(tabStackId: TabStackId, editorIndex: number): void {
+		const tabStack = this.findTabStack(tabStackId);
+		if (!tabStack) {
+			return;
+		}
+
+		// The group takes the index of the first editor of the tab stack after the move
+		const start = this.groupView.getIndexOfEditor(tabStack.editors[0]);
+		this.groupView.moveTabStack(tabStackId, editorIndex > start ? editorIndex - tabStack.editors.length : editorIndex);
+	}
+
+	/**
+	 * Returns whether sticky editors of this group dropped before the editor at
+	 * the index are unstuck before they move, so that they move together with
+	 * the others into the tab stack that the drop decides: while the group
+	 * shows tab stacks, on the row of the other tabs, and on a single row past
+	 * the slot right after the sticky tabs.
+	 */
+	private isUnstickingTabStackDrop(editorIndex: number): boolean {
+		return isTabStacksEnabled(this.groupsView.partOptions)
+			&& this.groupView.tabStacks.length > 0
+			&& (this.tabsModel instanceof UnstickyEditorGroupModel || (!(this.tabsModel instanceof StickyEditorGroupModel) && editorIndex > this.groupView.stickyCount));
+	}
+
+	/**
+	 * Returns whether editors of this group dropped before the editor at the
+	 * index move together, which they do while the group shows tab stacks,
+	 * unless the drop is on or among the sticky editors or moves one of them.
+	 */
+	private canMoveEditorsWithinGroup(editors: readonly EditorInput[], editorIndex: number): boolean {
+		return isTabStacksEnabled(this.groupsView.partOptions)
+			&& this.groupView.tabStacks.length > 0
+			&& !(this.tabsModel instanceof StickyEditorGroupModel)
+			&& editorIndex >= this.groupView.stickyCount
+			&& editors.every(editor => !this.groupView.isSticky(editor));
 	}
 
 	override dispose(): void {

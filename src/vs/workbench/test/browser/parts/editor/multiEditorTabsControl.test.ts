@@ -33,8 +33,27 @@ import { Action, IActionRunner } from '../../../../../base/common/actions.js';
 import type { IManagedHoverContentOrFactory } from '../../../../../base/browser/ui/hover/hover.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
+import { LocalSelectionTransfer } from '../../../../../platform/dnd/browser/dnd.js';
+import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier } from '../../../../browser/dnd.js';
+import { DataTransfers } from '../../../../../base/browser/dnd.js';
+import { isFirefox } from '../../../../../base/browser/browser.js';
 import '../../../../contrib/modernUI/browser/media/tabs.css';
 import '../../../../contrib/modernUI/browser/connectedEditorTabs.js';
+
+/**
+ * A data transfer that records the drop effect and the allowed effects that a
+ * drag handler sets, which the browser only keeps during a drag that it runs
+ * itself. Both start unset, so that a handler that sets no effect is told
+ * apart from one that sets `none`.
+ */
+class EffectsDataTransfer extends DataTransfer {
+	readonly recorded: { dropEffect?: DataTransfer['dropEffect']; effectAllowed?: DataTransfer['effectAllowed'] } = {};
+
+	override get dropEffect(): DataTransfer['dropEffect'] { return this.recorded.dropEffect ?? 'none'; }
+	override set dropEffect(value: DataTransfer['dropEffect']) { this.recorded.dropEffect = value; }
+	override get effectAllowed(): DataTransfer['effectAllowed'] { return this.recorded.effectAllowed ?? 'uninitialized'; }
+	override set effectAllowed(value: DataTransfer['effectAllowed']) { this.recorded.effectAllowed = value; }
+}
 
 suite('MultiEditorTabsControl', () => {
 
@@ -144,7 +163,10 @@ suite('MultiEditorTabsControl', () => {
 
 	teardown(() => {
 		container.remove();
+
+		// Disposing the tabs also ends the drag of a tab stack header
 		disposables.dispose();
+		LocalSelectionTransfer.getInstance<DraggedEditorIdentifier>().clearData(DraggedEditorIdentifier.prototype);
 	});
 
 	function tabActions(): string[] {
@@ -232,17 +254,81 @@ suite('MultiEditorTabsControl', () => {
 	 * and `+` for the Add Tab control.
 	 */
 	function strip(tabsContainer = container.querySelector<HTMLElement>('.tabs-container')!): string[] {
-		return Array.from(tabsContainer.children, child => {
-			if (child.classList.contains('tab-stack-header')) {
-				return `H:${child.querySelector('.tab-stack-header-label')!.textContent || '∅'}${child.classList.contains('collapsed') ? '(collapsed)' : ''}`;
-			}
+		return Array.from(tabsContainer.children, describeTabsChild);
+	}
 
-			if (child.classList.contains('tab')) {
-				return `T:${child.getAttribute('data-resource-name')}${child.classList.contains('tab-stack-member') ? '*' : ''}`;
-			}
+	function describeTabsChild(child: Element): string {
+		if (child.classList.contains('tab-stack-header')) {
+			return `H:${child.querySelector('.tab-stack-header-label')!.textContent || '∅'}${child.classList.contains('collapsed') ? '(collapsed)' : ''}`;
+		}
 
-			return '+';
-		});
+		if (child.classList.contains('tab')) {
+			return `T:${child.getAttribute('data-resource-name')}${child.classList.contains('tab-stack-member') ? '*' : ''}`;
+		}
+
+		return '+';
+	}
+
+	/**
+	 * Returns the child of a tabs container that {@link strip} describes as
+	 * `description`, or the first tabs container itself for an empty
+	 * description.
+	 */
+	function tabsChild(description: string): HTMLElement {
+		if (!description) {
+			return container.querySelector<HTMLElement>('.tabs-container')!;
+		}
+
+		return Array.from(container.querySelectorAll<HTMLElement>('.tabs-container > *')).find(child => describeTabsChild(child) === description)!;
+	}
+
+	/**
+	 * Dispatches a drag event near the left or right edge of a child of a
+	 * tabs container, or on the first tabs container itself for an empty
+	 * description.
+	 */
+	function dispatchDrag(type: string, description: string, side: 'left' | 'right', init?: DragEventInit): DragEvent {
+		const element = tabsChild(description);
+		const rect = element.getBoundingClientRect();
+		const event = new DragEvent(type, { bubbles: true, cancelable: true, clientX: side === 'left' ? rect.left + 1 : rect.right - 1, clientY: rect.top + rect.height / 2, dataTransfer: new DataTransfer(), ...init });
+		element.dispatchEvent(event);
+
+		return event;
+	}
+
+	/**
+	 * Describes the drop feedback as the children of the tabs containers
+	 * before and after the drop position, with `∅` for none.
+	 */
+	function dropFeedback(): string {
+		const describe = (element: Element | null) => element ? describeTabsChild(element) : '∅';
+
+		return `${describe(container.querySelector('.drop-target-left'))} | ${describe(container.querySelector('.drop-target-right'))}`;
+	}
+
+	/**
+	 * Drags over a child of a tabs container, or the first tabs container
+	 * itself for an empty description, and returns the drop feedback.
+	 */
+	function dragOver(description: string, side: 'left' | 'right', init?: DragEventInit): string {
+		dispatchDrag(EventType.DRAG_ENTER, description, side, init);
+		dispatchDrag(EventType.DRAG_OVER, description, side, init);
+
+		return dropFeedback();
+	}
+
+	/**
+	 * Starts a drag of editors of the group the way a tab does.
+	 */
+	function dragEditors(editors: readonly EditorInput[]): void {
+		LocalSelectionTransfer.getInstance<DraggedEditorIdentifier>().setData(editors.map(editor => new DraggedEditorIdentifier({ editor, groupId: model.id })), DraggedEditorIdentifier.prototype);
+	}
+
+	/**
+	 * Starts to drag a tab stack header, and returns the drag start event.
+	 */
+	function dragTabStackHeader(description: string): DragEvent {
+		return dispatchDrag(EventType.DRAG_START, description, 'left');
 	}
 
 	function tabStackHeaders(): HTMLElement[] {
@@ -2418,6 +2504,289 @@ suite('MultiEditorTabsControl', () => {
 		container.querySelector('.tabs-container')!.dispatchEvent(longPress);
 
 		assert.deepStrictEqual(menus, [EditorTabStackContextMenuId.id]);
+	});
+
+	test('with tab stacks disabled, a drag over the tabs shows the drop between the tabs next to it, and a drag of files enters as a copy while one of tabs leaves the effect to the browser', async () => {
+		const group = classicGroup();
+		const [a, b, c, d] = createTabStacksGroup(['a', 'b', 'c', 'd'], { enableTabStacks: false });
+		await layoutConnectedGroup(group, 800);
+
+		const feedback = [];
+		for (const [editors, description, side] of [[[a], 'T:c', 'right'], [[b, d], 'T:a', 'left'], [[c], 'T:d', 'right'], [[a], '', 'left']] as const) {
+			dragEditors(editors);
+			feedback.push(`${description || 'tabs'} ${side}: ${dragOver(description, side)}`);
+		}
+		const tabsDrag = new EffectsDataTransfer();
+		dispatchDrag(EventType.DRAG_ENTER, 'T:b', 'left', { dataTransfer: tabsDrag });
+
+		LocalSelectionTransfer.getInstance<DraggedEditorIdentifier>().clearData(DraggedEditorIdentifier.prototype);
+		const filesDrag = new EffectsDataTransfer();
+		filesDrag.setData(DataTransfers.RESOURCES, JSON.stringify([URI.file('/path/x').toString()]));
+		dispatchDrag(EventType.DRAG_ENTER, 'T:b', 'left', { dataTransfer: filesDrag });
+
+		assert.deepStrictEqual({ feedback, tabsDropEffect: tabsDrag.recorded.dropEffect, filesDropEffect: filesDrag.recorded.dropEffect }, {
+			feedback: ['T:c right: T:c | T:d', 'T:a left: ∅ | T:a', 'T:d right: T:d | ∅', 'tabs left: T:d | ∅'],
+			tabsDropEffect: undefined,
+			filesDropEffect: 'copy',
+		});
+	});
+
+	/**
+	 * Replaces the group with one whose tabs are laid out, with the tab stack
+	 * `Auth` of `b`, `c` and `d` and the collapsed tab stack `Docs` of `f`.
+	 */
+	async function createDropTabStacksGroup(): Promise<EditorInput[]> {
+		const group = classicGroup();
+		const editors = createTabStacksGroup(['a', 'b', 'c', 'd', 'e', 'f', 'g']);
+		const [, b, c, d, , f] = editors;
+		addTabStack([b, c, d], { label: 'Auth' });
+		addTabStack([f], { label: 'Docs', collapsed: true });
+		await layoutConnectedGroup(group, 1200);
+
+		return editors;
+	}
+
+	test('a drag of tabs over tabs with tab stacks shows the drop between two tabs, on the start slot of a tab stack after its header, before a header over its left half and after a collapsed tab stack over the right half of its header', async () => {
+		const [a] = await createDropTabStacksGroup();
+		const tabs = strip();
+		dragEditors([a]);
+
+		const feedback = [];
+		for (const [description, side] of [
+			['T:c*', 'left'],
+			['H:Auth', 'right'],
+			['T:b*', 'left'],
+			['H:Auth', 'left'],
+			['T:d*', 'right'],
+			['T:e', 'left'],
+			['H:Docs(collapsed)', 'left'],
+			['H:Docs(collapsed)', 'right'],
+			['T:g', 'right'],
+			['', 'left'],
+		] as const) {
+			feedback.push(`${description || 'tabs'} ${side}: ${dragOver(description, side)}`);
+		}
+
+		assert.deepStrictEqual({ tabs, feedback }, {
+			tabs: ['T:a', 'H:Auth', 'T:b*', 'T:c*', 'T:d*', 'T:e', 'H:Docs(collapsed)', 'T:g'],
+			feedback: [
+				'T:c* left: T:b* | T:c*',
+				'H:Auth right: H:Auth | T:b*',
+				'T:b* left: H:Auth | T:b*',
+				'H:Auth left: T:a | H:Auth',
+				'T:d* right: T:d* | T:e',
+				'T:e left: T:d* | T:e',
+				'H:Docs(collapsed) left: T:e | H:Docs(collapsed)',
+				'H:Docs(collapsed) right: H:Docs(collapsed) | T:g',
+				'T:g right: T:g | ∅',
+				'tabs left: T:g | ∅',
+			]
+		});
+	});
+
+	test('a drag of files over a tab stack shows the drop after the tab stack, and over its start slot before its header', async () => {
+		await createDropTabStacksGroup();
+
+		const feedback = [];
+		for (const [description, side] of [['T:c*', 'left'], ['H:Auth', 'right'], ['T:b*', 'left'], ['T:d*', 'right']] as const) {
+			const dataTransfer = new DataTransfer();
+			dataTransfer.setData(DataTransfers.RESOURCES, JSON.stringify([URI.file('/path/x').toString()]));
+			feedback.push(`${description} ${side}: ${dragOver(description, side, { dataTransfer })}`);
+		}
+
+		assert.deepStrictEqual(feedback, [
+			'T:c* left: T:d* | T:e',
+			'H:Auth right: T:a | H:Auth',
+			'T:b* left: T:a | H:Auth',
+			'T:d* right: T:d* | T:e',
+		]);
+	});
+
+	test('the drop feedback moves from a tab to a tab stack header and is gone once the drag leaves the tabs', async () => {
+		const [a] = await createDropTabStacksGroup();
+		dragEditors([a]);
+
+		dispatchDrag(EventType.DRAG_ENTER, 'T:c*', 'left');
+		dispatchDrag(EventType.DRAG_OVER, 'T:c*', 'left');
+		const overTab = dropFeedback();
+		dispatchDrag(EventType.DRAG_ENTER, 'H:Auth', 'left');
+		dispatchDrag(EventType.DRAG_LEAVE, 'T:c*', 'left');
+		dispatchDrag(EventType.DRAG_OVER, 'H:Auth', 'left');
+		const overHeader = dropFeedback();
+		const markers = container.querySelectorAll('.drop-target-left, .drop-target-right').length;
+		dispatchDrag(EventType.DRAG_LEAVE, 'H:Auth', 'left');
+
+		assert.deepStrictEqual({ overTab, overHeader, markers, afterLeave: dropFeedback() }, {
+			overTab: 'T:b* | T:c*',
+			overHeader: 'T:a | H:Auth',
+			markers: 2,
+			afterLeave: '∅ | ∅',
+		});
+	});
+
+	test('dragging a tab stack header drags only its tab stack, as a move that the tabs of its group take, until the drag ends', async () => {
+		await createDropTabStacksGroup();
+		const tabsTransfer = LocalSelectionTransfer.getInstance<DraggedEditorIdentifier | DraggedEditorGroupIdentifier>();
+
+		const dragStart = new EffectsDataTransfer();
+		dispatchDrag(EventType.DRAG_START, 'H:Auth', 'left', { dataTransfer: dragStart });
+		const dragImage = mainWindow.document.querySelector('.monaco-drag-image')?.textContent;
+		const draggedGroupOrEditors = tabsTransfer.hasData(DraggedEditorGroupIdentifier.prototype) || tabsTransfer.hasData(DraggedEditorIdentifier.prototype);
+		const dragEnter = new EffectsDataTransfer();
+		dispatchDrag(EventType.DRAG_ENTER, 'T:g', 'left', { dataTransfer: dragEnter });
+		dispatchDrag(EventType.DRAG_OVER, 'T:g', 'left');
+		const feedback = dropFeedback();
+		dispatchDrag(EventType.DRAG_END, 'H:Auth', 'left');
+		const dragEnterAfterEnd = new EffectsDataTransfer();
+		dispatchDrag(EventType.DRAG_ENTER, 'T:g', 'left', { dataTransfer: dragEnterAfterEnd });
+
+		assert.deepStrictEqual({
+			effectAllowed: dragStart.recorded.effectAllowed,
+			types: [...dragStart.types],
+			dragImage,
+			draggedGroupOrEditors,
+			dropEffect: dragEnter.recorded.dropEffect,
+			feedback,
+			dropEffectAfterEnd: dragEnterAfterEnd.recorded.dropEffect,
+			feedbackAfterEnd: dropFeedback(),
+		}, {
+			effectAllowed: 'move',
+			types: isFirefox ? [DataTransfers.TEXT] : [],
+			dragImage: 'Auth (3 editors)',
+			draggedGroupOrEditors: false,
+			dropEffect: 'move',
+			feedback: 'H:Docs(collapsed) | T:g',
+			dropEffectAfterEnd: 'none',
+			feedbackAfterEnd: '∅ | ∅',
+		});
+	});
+
+	test('a tab stack that goes away while its header is dragged ends the drag of its header, so the tabs take the drags that follow', async () => {
+		const [, b, c, d] = await createDropTabStacksGroup();
+		dragTabStackHeader('H:Auth');
+		model.removeEditorsFromTabStack([b, c, d]);
+		control.updateTabStacks();
+
+		const filesDrag = new EffectsDataTransfer();
+		filesDrag.setData(DataTransfers.RESOURCES, JSON.stringify([URI.file('/path/x').toString()]));
+		const feedback = dragOver('T:c', 'left', { dataTransfer: filesDrag });
+
+		assert.deepStrictEqual({ tabs: strip(), dropEffect: filesDrag.recorded.dropEffect, feedback }, {
+			tabs: ['T:a', 'T:b', 'T:c', 'T:d', 'T:e', 'H:Docs(collapsed)', 'T:g'],
+			dropEffect: 'copy',
+			feedback: 'T:b | T:c',
+		});
+	});
+
+	test('a dragged tab stack header shows the drop before or after the tab under it, and after the last tab over the empty space of the tabs', async () => {
+		const group = classicGroup();
+		const [, b, c] = createTabStacksGroup(['1', '2', '3', '4', '5']);
+		addTabStack([b, c], { label: 'S' });
+		await layoutConnectedGroup(group, 1200);
+
+		const feedback = [];
+		for (const [description, side] of [['T:5', 'left'], ['T:5', 'right'], ['T:1', 'left'], ['', 'left']] as const) {
+			dragTabStackHeader('H:S');
+			feedback.push(`${description || 'tabs'} ${side}: ${dragOver(description, side)}`);
+		}
+
+		assert.deepStrictEqual(feedback, [
+			'T:5 left: T:4 | T:5',
+			'T:5 right: T:5 | ∅',
+			'T:1 left: ∅ | T:1',
+			'tabs left: T:5 | ∅',
+		]);
+	});
+
+	test('a dragged tab stack header shows the drop before or after another tab stack by its middle, after the pinned tabs, and none over or next to its own tab stack', async () => {
+		const group = classicGroup();
+		const [sticky, , b, c, , e, f] = createTabStacksGroup(['0', '1', '2', '3', '4', '5', '6', '7']);
+		model.stick(sticky);
+		control.stickEditor(sticky);
+		addTabStack([b, c], { label: 'S' });
+		const other = addTabStack([e, f], { label: 'T' });
+		await layoutConnectedGroup(group, 1200);
+
+		const feedback: string[] = [];
+		const dragHeaderOver = (description: string, side: 'left' | 'right') => {
+			dragTabStackHeader('H:S');
+			feedback.push(`${description} ${side}: ${dragOver(description, side)}`);
+		};
+		for (const [description, side] of [['T:2*', 'right'], ['H:S', 'right'], ['T:1', 'right'], ['T:4', 'left'], ['T:5*', 'left'], ['H:T', 'right'], ['T:6*', 'right'], ['T:0', 'left']] as const) {
+			dragHeaderOver(description, side);
+		}
+		model.updateTabStack(other, { collapsed: true });
+		control.updateTabStacks();
+		dragHeaderOver('H:T(collapsed)', 'left');
+		dragHeaderOver('H:T(collapsed)', 'right');
+
+		assert.deepStrictEqual(feedback, [
+			'T:2* right: ∅ | ∅',
+			'H:S right: ∅ | ∅',
+			'T:1 right: ∅ | ∅',
+			'T:4 left: ∅ | ∅',
+			'T:5* left: T:4 | H:T',
+			'H:T right: T:4 | H:T',
+			'T:6* right: T:6* | T:7',
+			'T:0 left: T:0 | T:1',
+			'H:T(collapsed) left: T:4 | H:T(collapsed)',
+			'H:T(collapsed) right: H:T(collapsed) | T:7',
+		]);
+	});
+
+	test('with wrapped tabs, a dragged tab stack header shows the drop before another tab stack over its first half and after it over its last half, in the order of its header and tabs, and by the side of its middle tab', async () => {
+		const group = classicGroup();
+		const [a, , c, d] = createTabStacksGroup(['a', 'b', 'c', 'd', 'e'], { wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, editorActionsLocation: 'hidden' });
+		addTabStack([a], { label: 'S' });
+		addTabStack([c, d], { label: 'T' });
+		await layoutConnectedGroup(group, 1200);
+		const [headerS, headerT] = tabStackHeaders();
+
+		// The header and the first tab of T end the first row, and its other tab wraps onto the second row
+		await layoutConnectedGroup(group, headerS.offsetWidth + 3 * 120 + headerT.offsetWidth + 10);
+		const rowTops = new Set([headerT, tabsChild('T:c*'), tabsChild('T:d*')].map(element => element.offsetTop)).size;
+
+		const feedback = [];
+		for (const [description, side] of [['H:T', 'left'], ['H:T', 'right'], ['T:c*', 'left'], ['T:c*', 'right'], ['T:d*', 'left'], ['T:d*', 'right']] as const) {
+			dragTabStackHeader('H:S');
+			feedback.push(`${description} ${side}: ${dragOver(description, side)}`);
+		}
+
+		assert.deepStrictEqual({ rowTops, feedback }, {
+			rowTops: 2,
+			feedback: [
+				'H:T left: T:b | H:T',
+				'H:T right: T:b | H:T',
+				'T:c* left: T:b | H:T',
+				'T:c* right: T:d* | T:e',
+				'T:d* left: T:d* | T:e',
+				'T:d* right: T:d* | T:e',
+			]
+		});
+	});
+
+	test('with pinned tabs on a separate row, a dragged tab stack header shows the drop in the row of the other tabs and none in the row of pinned tabs', () => {
+		const [sticky, , b, c] = createTabStacksGroup(['s', 'a', 'b', 'c', 'd'], { pinnedTabsOnSeparateRow: true });
+		model.stick(sticky);
+		addTabStack([b, c], { label: 'S' });
+		control.dispose();
+		container.replaceChildren();
+		classicGroup();
+		const multiRowControl = disposables.add(instantiationService.createInstance(MultiRowEditorControl, container, editorPartsView, groupsView, groupView, model, undefined, false, false));
+		multiRowControl.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL));
+		multiRowControl.layout({ container: new Dimension(1200, 70), available: new Dimension(1200, 300) });
+
+		const feedback = [];
+		for (const description of ['T:d', 'T:s']) {
+			dragTabStackHeader('H:S');
+			feedback.push(`${description} right: ${dragOver(description, 'right')}`);
+			dispatchDrag(EventType.DRAG_END, 'H:S', 'left');
+		}
+
+		assert.deepStrictEqual(feedback, [
+			'T:d right: T:d | ∅',
+			'T:s right: ∅ | ∅',
+		]);
 	});
 
 	ensureNoDisposablesAreLeakedInTestSuite();

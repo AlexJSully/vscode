@@ -1310,7 +1310,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 			inactiveSelection: internalOptions?.inactiveSelection,
 			active: this.count === 0 || !options?.inactive,
 			supportSideBySide: internalOptions?.supportSideBySide,
-			tabStack: internalOptions?.tabStack
+			tabStack: internalOptions?.tabStack ?? undefined
 		};
 
 		if (!openEditorOptions.active && !openEditorOptions.pinned && this.model.activeEditor && !this.model.isPinned(this.model.activeEditor)) {
@@ -1343,12 +1343,13 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		}
 
 		// Actually move the editor if a specific index is provided and we figure
-		// out that the editor is already opened at a different index. This
-		// ensures the right set of events are fired to the outside.
+		// out that the editor is already opened at a different index, or a tab
+		// stack hint decides its tab stack. This ensures the right set of events
+		// are fired to the outside.
 		if (typeof openEditorOptions.index === 'number') {
 			const indexOfEditor = this.model.indexOf(editor);
-			if (indexOfEditor !== -1 && indexOfEditor !== openEditorOptions.index) {
-				this.doMoveEditorInsideGroup(editor, openEditorOptions);
+			if (indexOfEditor !== -1 && (indexOfEditor !== openEditorOptions.index || internalOptions?.tabStack !== undefined)) {
+				this.doMoveEditorInsideGroup(editor, openEditorOptions, internalOptions?.tabStack);
 			}
 		}
 
@@ -1452,15 +1453,22 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 
 		await this.doOpenEditor(firstEditor.editor, firstEditor.options, openEditorsOptions);
 
-		// Open the other ones inactive
+		// Open the other ones inactive after the first one: those that already
+		// follow it in order stay where they are, and the rest open after them,
+		// past any tab stack that they would open inside of
 		const inactiveEditors = editorsToOpen.slice(1);
-		const startingIndex = getIndexPastTabStack(this, this.getIndexOfEditor(firstEditor.editor) + 1);
+		const indexAfterFirstEditor = this.model.indexOf(firstEditor.editor, undefined, openEditorsOptions) + 1;
+		let inPlaceCount = 0;
+		while (inPlaceCount < inactiveEditors.length && this.model.indexOf(inactiveEditors[inPlaceCount].editor, undefined, openEditorsOptions) === indexAfterFirstEditor + inPlaceCount) {
+			inPlaceCount++;
+		}
+		const indexPastInPlaceEditors = getIndexPastTabStack(this, indexAfterFirstEditor + inPlaceCount);
 		await Promises.settled(inactiveEditors.map(({ editor, options }, index) => {
 			return this.doOpenEditor(editor, {
 				...options,
 				inactive: true,
 				pinned: true,
-				index: startingIndex + index
+				index: index < inPlaceCount ? indexAfterFirstEditor + index : indexPastInPlaceEditors + index - inPlaceCount
 			}, {
 				...openEditorsOptions,
 				// optimization: update the title control later
@@ -1518,7 +1526,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 
 		// Move within same group
 		if (this === target) {
-			this.doMoveEditorInsideGroup(editor, options);
+			this.doMoveEditorInsideGroup(editor, options, internalOptions?.tabStack);
 			return true;
 		}
 
@@ -1528,7 +1536,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		}
 	}
 
-	private doMoveEditorInsideGroup(candidate: EditorInput, options?: IEditorOpenOptions): void {
+	private doMoveEditorInsideGroup(candidate: EditorInput, options?: IEditorOpenOptions, tabStack?: TabStackId | null): void {
 		const moveToIndex = options ? options.index : undefined;
 		if (typeof moveToIndex !== 'number') {
 			return; // do nothing if we move into same group without index
@@ -1540,6 +1548,13 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		const currentIndex = this.model.indexOf(candidate);
 		const editor = this.model.getEditorByIndex(currentIndex);
 		if (!editor) {
+			return;
+		}
+
+		// A tab stack hint decides the tab stack of an editor that moves after the sticky editors
+		if (tabStack !== undefined && !options?.sticky && moveToIndex >= this.model.stickyCount) {
+			this.unstickEditor(editor);
+			this.moveEditorsWithinGroup([editor], moveToIndex, tabStack);
 			return;
 		}
 

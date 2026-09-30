@@ -590,9 +590,11 @@ export interface IInternalEditorOpenOptions extends IInternalEditorTitleControlO
 	/**
 	 * The tab stack a new editor joins when an editor of that tab stack is next
 	 * to the index it opens at. Used when an editor replaces a member of a tab
-	 * stack and when a tab from another group is dropped into a tab stack.
+	 * stack and when a tab is dropped into a tab stack. An editor that the group
+	 * has already, opened at an index after the sticky editors, moves into that
+	 * tab stack, or out of any tab stack when this is `null`.
 	 */
-	readonly tabStack?: TabStackId;
+	readonly tabStack?: TabStackId | null;
 }
 
 export interface IInternalEditorCloseOptions extends IInternalEditorTitleControlOptions {

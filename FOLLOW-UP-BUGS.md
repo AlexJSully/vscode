@@ -9,10 +9,10 @@ These are existing bugs found while building Tab Stacks (Chrome-style tab groupi
   - `Confirmed by test`, `PR open`, `Fixed`.
 - **Workflow:** write the failing test first, in the suite named in the entry. Then fix, then update the status here.
 - **What goes here:** a bug found while building Tab Stacks is fixed immediately, with a test, when either Tab Stacks introduced it (it does not exist on `main`) or it blocks Tab Stacks from working. A bug that already exists on `main` and does not block Tab Stacks is added here and deferred.
-- **Blocking review (2026-09-26, updated 2026-09-28):** FB-1 to FB-12 all exist on `main`, and none of them blocks Tab Stacks, so all are deferred. Bugs that existed on `main` but blocked Tab Stacks were fixed in the feature. They are listed under [Fixed as part of Tab Stacks](#fixed-as-part-of-tab-stacks) so the pull request can mention them.
+- **Blocking review (2026-09-26, updated 2026-09-28):** FB-1 to FB-16 all exist on `main`, and none of them blocks Tab Stacks, so all are deferred. Bugs that existed on `main` but blocked Tab Stacks were fixed in the feature. They are listed under [Fixed as part of Tab Stacks](#fixed-as-part-of-tab-stacks) so the pull request can mention them.
 - **Scope:** this file is for the fork and does not belong in the upstream Tab Stacks pull request.
 
-**Suggested PR order** (smallest and safest first): FB-3, FB-10, FB-5, FB-6, FB-11, FB-7, FB-8, FB-1, FB-2, FB-4, FB-9, FB-12.
+**Suggested PR order** (smallest and safest first): FB-3, FB-10, FB-5, FB-6, FB-11, FB-14, FB-7, FB-8, FB-13, FB-15, FB-1, FB-2, FB-4, FB-16, FB-9, FB-12.
 
 An upstream search on 2026-09-25 (`gh search issues`) found no existing microsoft/vscode issue for any of them.
 
@@ -32,6 +32,10 @@ An upstream search on 2026-09-25 (`gh search issues`) found no existing microsof
 | [FB-10](#fb-10-a-command-context-test-asserts-the-wrong-result) | A command-context test asserts the wrong result | Confirmed by reading |
 | [FB-11](#fb-11-a-touch-long-press-on-a-tab-opens-two-menus) | A touch long-press on a tab opens two menus | Confirmed by test |
 | [FB-12](#fb-12-connected-tabs-may-keep-the-wrapping-class-on-a-single-row) | Connected tabs may keep the wrapping class on a single row | Needs repro test |
+| [FB-13](#fb-13-a-drop-marker-can-stay-visible-after-a-drop) | A drop marker can stay visible after a drop | Confirmed live (feature off) |
+| [FB-14](#fb-14-agents-window-no-drop-marker-on-empty-tab-bar-space) | Agents window: no drop marker on empty tab-bar space | Confirmed by reading |
+| [FB-15](#fb-15-open-editors-drops-land-one-slot-past-the-marker) | Open Editors: drops of an already-open editor land one slot past the marker | Confirmed by reading |
+| [FB-16](#fb-16-a-tabs-accessible-name-keeps-its-pinned-state-after-a-pin-change) | A tab's accessible name keeps its pinned state after a pin change | Confirmed live |
 
 ## FB-1: restored MRU and preview point at the wrong editors
 
@@ -182,9 +186,52 @@ An upstream search on 2026-09-25 (`gh search issues`) found no existing microsof
 - **Suggested fix:** compare against the connected tab height when connected tabs are active. Confirm the behaviour first.
 - **PR grouping:** alone, after confirmation.
 
+## FB-13: a drop marker can stay visible after a drop
+
+- **Area:** tab drag and drop in `MultiEditorTabsControl` (`src/vs/workbench/browser/parts/editor/multiEditorTabsControl.ts`).
+- **Evidence:** at `e5f3c4cdf79`, a tab's drop listener (around line 1374) calls `this.onDrop(...)`. That starts with `EventHelper.stop(e, true)` (line 2584), which stops the drop from propagating to the tabs container's `DragAndDropObserver` (listeners around lines 496-546). That observer counts drag-enter and drag-leave, so its count is never reset for that drop. A later drag across that group's tabs can then leave a drop marker behind. Drag end can also fire on a tab that has since been detached.
+- **Impact:** a stale drop marker in the tab bar after dragging between groups.
+- **How found:** reproduced live with Tab Stacks turned off while building slice D. The code involved is unchanged from `main`.
+- **Confirming test** (suite `MultiEditorTabsControl`): drop a tab from group A onto a tab in group B, drag a tab of B across B's tabs and out of them, then assert B shows no drop marker.
+- **Suggested fix:** reset the container's drag state on any drop inside it, for example with a capture-phase drop listener on the container, instead of relying on the event reaching it.
+- **PR grouping:** alone.
+
+## FB-14: Agents window: no drop marker on empty tab-bar space
+
+- **Area:** `MultiEditorTabsControl.updateDropFeedback` (`src/vs/workbench/browser/parts/editor/multiEditorTabsControl.ts`).
+- **Evidence:** at `e5f3c4cdf79`, the drop marker for empty tab-bar space goes on `element.lastElementChild` (line 1422). Where the tab bar has an Add Tab control (`menuIds.tabsBarAddTab`, used by the Agents window), that last child is the Add Tab control, not the last tab, so no marker is visible.
+- **Impact:** in the Agents window, dragging over empty tab-bar space shows no drop marker, although the drop still works.
+- **How found:** by reading the code while building Tab Stacks slice D.
+- **Confirming test** (suite `MultiEditorTabsControl`): with an Add Tab menu id set, drag over the empty space and assert the last tab has the drop-target class.
+- **Suggested fix:** mark the last tab rather than the container's last child.
+- **PR grouping:** alone.
+
+## FB-15: Open Editors drops land one slot past the marker
+
+- **Area:** the drop handling of the Open Editors view (`src/vs/workbench/contrib/files/browser/views/openEditorsView.ts`).
+- **Evidence:** at `e5f3c4cdf79`, the view passes the drop gap as the index when it moves editors (line 902, `oe.group.moveEditor(oe.editor, group, { index: targetEditorIndex, ... })`) and when it drops files (line 907, `this.dropHandler.handleDrop(..., { index: targetEditorIndex })`). For an editor the group already has left of the gap, the move treats the index as the final position after removal, so the editor lands one slot past where it was dropped. The tab bar had the same off-by-one; Tab Stacks fixed it there (see [Fixed as part of Tab Stacks](#fixed-as-part-of-tab-stacks)).
+- **Impact:** reordering or dropping an already-open editor downward in Open Editors places it one position too far. With Tab Stacks on, that can put it inside the next tab stack.
+- **How found:** by reading the code while fixing the same issue in the tab bar during Tab Stacks slice D.
+- **Confirming test** (Open Editors or `EditorGroupsService` suite): drop the first editor of `1 2 3 4` just before `3` in Open Editors, and assert the order `2 1 3 4`.
+- **Suggested fix:** lower the index by one for each dropped editor the group already has left of the gap, as the tab bar now does.
+- **PR grouping:** alone.
+
+## FB-16: a tab's accessible name keeps its pinned state after a pin change
+
+- **Area:** `MultiEditorTabsControl.stickEditor`, `unstickEditor` and `doHandleStickyEditorChange` (`src/vs/workbench/browser/parts/editor/multiEditorTabsControl.ts`).
+- **Evidence:** at `e5f3c4cdf79`, `computeEditorAriaLabel` adds ", pinned" to a tab's accessible name when the editor is sticky (`src/vs/workbench/browser/editor.ts:281-282`). The tab bar computes those names only in `computeTabLabels` (line 1570), which runs when editors open or close and when labels or the label format change (lines 672, 765, 878, 904). A pin change goes through `stickEditor` / `unstickEditor` (lines 814-821) to `doHandleStickyEditorChange` (822-835), which redraws the tab with its cached label and does not recompute it.
+- **Impact:** after pinning a tab, screen readers still announce it without "pinned". After unpinning a tab, they still announce it as "pinned". This lasts until an editor in the group opens or closes, or a label changes. Dragging a pinned tab onto the unpinned tabs shows it too, since the drop unpins the tab.
+- **How found:** live, during the Tab Stacks slice D drag check: after dragging a pinned tab onto the unpinned tabs, its `aria-label` was still "one.txt, pinned". A plain pin through the tab menu does the same: the pinned tab's `aria-label` has no "pinned".
+- **Confirming test** (suite `MultiEditorTabsControl`, `src/vs/workbench/test/browser/parts/editor/multiEditorTabsControl.test.ts`): open 2 editors, pin and then unpin the second through the group, and snapshot its tab's `aria-label` after each step.
+- **Suggested fix:** recompute the tab labels in `doHandleStickyEditorChange` before redrawing the tab.
+- **PR grouping:** with FB-4, since both are about the "pinned" part of tab accessible names.
+
 ## Fixed as part of Tab Stacks
 
 These existed on `main`, but they blocked Tab Stacks, so the feature fixed them with tests. The Tab Stacks pull request description should mention them, because they change behaviour even with the setting off.
 
 - **Pill-mode sticky mask did not cover the gutter below the pills.** At `e5f3c4cdf79`, `.sticky-tabs-background` (`src/vs/workbench/contrib/modernUI/browser/media/tabs.css:590-599`) is only one tab height tall. With compact or shrink pinned tabs scrolled, content shows through the 8px gutter under the pills. On `main` this is latent. It shows only with a non-transparent `modernEditorTab.inactiveBackground`, but tab stack indicators make it visible. Fixed with `bottom: 0`. Test: "extends the pill sticky mask over the gutter below the tabs".
 - **A reveal block stayed set while tabs wrap.** At `e5f3c4cdf79`, `blockRevealActiveTabOnce()` (line 2562) sets a flag that only the non-wrapping layout clears (around line 2433). With `workbench.editor.wrapTabs` on, closing a tab through its close button leaves the flag set until wrapping is turned off, and then the next reveal of the active tab is skipped. Tab stack headers set the same flag. Fixed by also clearing it in the wrapping branch. Covered by the header-click reveal tests in `MultiEditorTabsControl`.
+- **An editor dropped into a group that already has it landed one slot past the marker.** At `e5f3c4cdf79`, the tab bar's drop handler passed the drop gap to `moveEditor` / `openEditor`, and for an editor the group already has left of the gap, those treat it as the final index after removal. This covers a tab dragged in from another group, a file from the Explorer, a tree item, and split-in-group or diff editors. With Tab Stacks on, the extra slot could put the editor inside the next tab stack. The tab bar now lands the editor exactly at the drop marker, and this also changes the behaviour with the setting off. Covered by the tab-stack drop tables in the `EditorGroupsService` suite.
+- **Editors opened together after a file split in its group opened at the start of the group.** At `e5f3c4cdf79`, `EditorGroupView.openEditors` (line 1360) opens the editors after the first one at `this.getIndexOfEditor(firstEditor.editor) + 1`. The first editor itself is opened with `supportSideBySide: SideBySideEditor.BOTH`, which reuses a side-by-side editor that shows the file on both sides (Split in Group), but that lookup does not match it, returns -1, and so opens the other editors at index 0. This happens, for example, when files are dropped on the tabs and the first one is split in the group. With Tab Stacks on, index 0 can be inside a tab stack. The lookup now uses the same side-by-side matching that opened the first editor, and this also changes the behaviour with the setting off. Test: "files that the group has already, one in a side by side or diff editor, dropped from the Explorer or the Open Editors view, land in drop order where the drop feedback shows, also with tab stacks disabled, and never join a tab stack" (`EditorGroupsService`).
+- **Files dropped together landed apart when the group already had some of them.** At `e5f3c4cdf79`, a drop of several files opens the first one at the drop gap and each later one after the one before it, one move at a time. A file the group already has, to the left of where it lands, is removed before it is inserted, so it lands one slot further than the others. For example, with tabs `1 2 3 4`, dropping `9` and `1` after `3` gives `2 3 9 4 1`, not `2 3 9 1 4`. With Tab Stacks on, the files could end up on both sides of a tab stack. The tab bar now moves the files the group already has next to each other, in drop order, at the drop marker before it opens the others, and this also changes the behaviour with the setting off. Test: "with tab stacks disabled, files that the group has already, dropped from the Explorer or as a tree item, land in drop order where the drop feedback shows" (`EditorGroupsService`).
