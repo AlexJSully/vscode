@@ -3,7 +3,7 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { $, Dimension, getWindow, scheduleAtNextAnimationFrame } from '../../../../../base/browser/dom.js';
+import { $, Dimension, getWindow, isHTMLElement, scheduleAtNextAnimationFrame } from '../../../../../base/browser/dom.js';
 import { Action } from '../../../../../base/common/actions.js';
 import { CancellationToken } from '../../../../../base/common/cancellation.js';
 import { Event } from '../../../../../base/common/event.js';
@@ -53,6 +53,7 @@ import {
 import { DEFAULT_EDITOR_PART_OPTIONS, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView } from '../../../../browser/parts/editor/editor.js';
 import { BreadcrumbsService, IBreadcrumbsService } from '../../../../browser/parts/editor/breadcrumbs.js';
 import { EditorTitleControl } from '../../../../browser/parts/editor/editorTitleControl.js';
+import { getTabStackColorCssValue } from '../../../../browser/parts/editor/tabStackEditor.js';
 import { IDecorationData, IDecorationsProvider, IDecorationsService } from '../../../../services/decorations/common/decorations.js';
 import { DecorationsService } from '../../../../services/decorations/browser/decorationsService.js';
 import { INotebookDocumentService, NotebookDocumentWorkbenchService } from '../../../../services/notebook/common/notebookDocumentService.js';
@@ -366,6 +367,17 @@ function activeTabStackMemberEditorSpecs(activeIndex: number): IEditorSpec[] {
 	return specs.map((spec, index) => ({ ...spec, active: index === activeIndex }));
 }
 
+/** An active editor outside any tab stack, followed by a tab stack of three editors that ends the tabs. */
+function lastTabStackEditorSpecs(): IEditorSpec[] {
+	return activeTabStackMemberEditorSpecs(0).slice(0, 4);
+}
+
+/** An active editor outside any tab stack, followed by a tab stack of two editors and a tab stack of one editor. */
+function tabStackBeforeHeaderEditorSpecs(): IEditorSpec[] {
+	const specs = activeTabStackMemberEditorSpecs(0);
+	return [...specs.slice(0, 3), specs[5]];
+}
+
 function cannotCloseStickyEditorSpecs(): IEditorSpec[] {
 	return [
 		{ resource: file('/project/Changes'), capabilities: EditorInputCapabilities.CannotClose, pinned: true, sticky: true, active: true },
@@ -444,6 +456,12 @@ export interface IEditorTabBarFixtureOptions {
 	 *  `alwaysShowEditorActions` filtering and unfocused tab styling. */
 	readonly active?: boolean;
 	readonly dropTargetBetweenTabs?: boolean;
+	/**
+	 * A drop of tabs right after the tab at `index`, inside or outside of the
+	 * tab stack of that tab, which the tabs show as they do during a drag of
+	 * tabs over them.
+	 */
+	readonly dropAfterTab?: { readonly index: number; readonly inTabStack: boolean };
 	readonly showHeader?: boolean;
 	readonly useModernUITabs?: boolean;
 	readonly reserveHeaderSpace?: boolean;
@@ -706,6 +724,9 @@ export function renderEditorTabBarFixture(ctx: ComponentFixtureContext, options:
 		tabs[1]?.classList.add('drop-target-left');
 		tabs[2]?.classList.add('drop-target-right');
 	}
+	if (options.dropAfterTab) {
+		renderDropAfterTab(model, tabs[options.dropAfterTab.index], options.dropAfterTab, partOptions);
+	}
 	if (options.forcedHoverTab !== undefined) {
 		tabs[options.forcedHoverTab]?.classList.add('fixture-hover');
 	}
@@ -754,6 +775,40 @@ export function renderEditorTabBarFixture(ctx: ComponentFixtureContext, options:
 	}
 }
 
+/**
+ * Marks a drop of tabs right after the tab, inside or outside of its tab
+ * stack, as the tabs do during a drag of tabs over them: the tab or tab stack
+ * header after the drop shows it too, if there is one, and tabs on a single
+ * row that end with a tab stack get empty space after them.
+ */
+function renderDropAfterTab(model: EditorGroupModel, tab: HTMLElement | undefined, drop: { readonly index: number; readonly inTabStack: boolean }, partOptions: IEditorPartOptions): void {
+	const tabsContainer = tab?.parentElement;
+	if (!tab || !tabsContainer) {
+		throw new Error(`The drop fixture requires a tab at index ${drop.index}`);
+	}
+
+	const next = tab.nextElementSibling;
+	const elementAfter = isHTMLElement(next) && next.matches('.tab, .tab-stack-header') ? next : undefined;
+	tab.classList.add('drop-target-left');
+	elementAfter?.classList.add('drop-target-right');
+	if (!elementAfter) {
+		tab.classList.add('drop-target-last');
+	}
+
+	const tabStack = model.getTabStack(model.getEditorByIndex(drop.index)!);
+	if (drop.inTabStack && tabStack) {
+		for (const element of [tab, elementAfter]) {
+			element?.classList.add('drop-target-in-tab-stack');
+			element?.style.setProperty('--drop-target-tab-stack-color', getTabStackColorCssValue(tabStack.color));
+		}
+	}
+
+	const lastSlot = tabsContainer.querySelector(':scope > .tabs-bar-add-tab')?.previousElementSibling ?? tabsContainer.lastElementChild;
+	if (!partOptions.wrapTabs && lastSlot?.classList.contains('tab-stack-member')) {
+		tabsContainer.classList.add('tab-stack-drop-space');
+	}
+}
+
 function render(modernUI: boolean, options: Omit<IEditorTabBarFixtureOptions, 'modernUI'>): (ctx: ComponentFixtureContext) => void {
 	return (ctx: ComponentFixtureContext) => {
 		ctx.container.classList.toggle('modern-ui', modernUI);
@@ -762,6 +817,8 @@ function render(modernUI: boolean, options: Omit<IEditorTabBarFixtureOptions, 'm
 }
 
 function createFixtures(modernUI: boolean, additionalThemes: readonly ComponentFixtureAdditionalTheme[] = []) {
+	const dropThemes: readonly ComponentFixtureAdditionalTheme[] = [...additionalThemes, 'lightHighContrast'];
+	const wrappedDropOptions: Partial<IEditorPartOptions> = { enableTabStacks: true, wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, editorActionsLocation: 'hidden' };
 	return {
 		// Baseline: multiple tabs with mixed sticky / pinned / preview / dirty state.
 		Default: defineComponentFixture({
@@ -907,6 +964,37 @@ function createFixtures(modernUI: boolean, additionalThemes: readonly ComponentF
 		// The active editor is the only tab of a tab stack with a custom color.
 		TabStacksActiveOnlyMember: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: activeTabStackMemberEditorSpecs(5) }), additionalThemes }),
 
+		// A drop over the right half of the last tab of a tab stack lands inside it, so the drop marker stands on a foot in its color.
+		TabStacksDropInside: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: activeTabStackMemberEditorSpecs(0), width: 1000, dropAfterTab: { index: 3, inTabStack: true } }), additionalThemes: dropThemes }),
+
+		// The same drop right before the header of the next tab stack, which shows the foot at the height of the line under the tabs too.
+		TabStacksDropInsideBeforeHeader: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: tabStacksEditorSpecs(), width: 1200, dropAfterTab: { index: 2, inTabStack: true } }), additionalThemes: dropThemes }),
+
+		// A drop over the left half of the header of the next tab stack lands outside of both tab stacks, so the drop marker has no foot and is as tall as between tabs.
+		TabStacksDropOutsideBeforeHeader: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: tabStacksEditorSpecs(), width: 1200, dropAfterTab: { index: 2, inTabStack: false } }), additionalThemes: dropThemes }),
+
+		// The drops before the header of the next tab stack, inside and outside of the tab stack before it, with pinned tabs on a separate row.
+		TabStacksPinnedRowDropInsideBeforeHeader: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true, pinnedTabsOnSeparateRow: true }, editors: tabStacksEditorSpecs(), width: 1200, dropAfterTab: { index: 2, inTabStack: true } }), additionalThemes: dropThemes }),
+		TabStacksPinnedRowDropOutsideBeforeHeader: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true, pinnedTabsOnSeparateRow: true }, editors: tabStacksEditorSpecs(), width: 1200, dropAfterTab: { index: 2, inTabStack: false } }), additionalThemes: dropThemes }),
+
+		// A drop over the right half of the last tab of a tab stack that ends the tabs lands inside it, so the foot of the drop marker reaches into the empty space after the tabs.
+		TabStacksDropInsideEnd: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: lastTabStackEditorSpecs(), dropAfterTab: { index: 3, inTabStack: true } }), additionalThemes: dropThemes }),
+
+		// A drop over the empty space after a tab stack that ends the tabs lands outside of it, so the drop marker at the same place has no foot.
+		TabStacksDropOutsideEnd: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: lastTabStackEditorSpecs(), dropAfterTab: { index: 3, inTabStack: false } }), additionalThemes: dropThemes }),
+
+		// A drop over the right half of the last tab of a tab stack that ends a row of wrapped tabs lands inside it, so the foot of the drop marker runs into the tab that starts the next row.
+		TabStacksDropInsideRowEnd: defineComponentFixture({ render: render(modernUI, { partOptions: wrappedDropOptions, editors: activeTabStackMemberEditorSpecs(0), width: 560, dropAfterTab: { index: 3, inTabStack: true } }), additionalThemes: dropThemes }),
+
+		// A drop over the left half of the tab that starts the next row lands outside of the tab stack, so the drop marker at the same place has no foot.
+		TabStacksDropOutsideRowEnd: defineComponentFixture({ render: render(modernUI, { partOptions: wrappedDropOptions, editors: activeTabStackMemberEditorSpecs(0), width: 560, dropAfterTab: { index: 3, inTabStack: false } }), additionalThemes: dropThemes }),
+
+		// Where the tabs wrap, a drop over the right half of the last tab of a tab stack right before the header of the next tab stack, both in the last row, lands inside the first, so the drop marker on that header is as tall as the tabs of that row and stands on a foot at the height of the line under them.
+		TabStacksDropInsideBeforeHeaderWrapped: defineComponentFixture({ render: render(modernUI, { partOptions: wrappedDropOptions, editors: tabStackBeforeHeaderEditorSpecs(), width: 360, dropAfterTab: { index: 2, inTabStack: true } }), additionalThemes: dropThemes }),
+
+		// A drop over the left half of that header lands outside of both tab stacks, so the drop marker at the same place has no foot and is as tall.
+		TabStacksDropOutsideBeforeHeaderWrapped: defineComponentFixture({ render: render(modernUI, { partOptions: wrappedDropOptions, editors: tabStackBeforeHeaderEditorSpecs(), width: 360, dropAfterTab: { index: 2, inTabStack: false } }), additionalThemes: dropThemes }),
+
 		// The editor of a tab stack under its header, with the name and the colors of the tab stack.
 		TabStackEditor: defineComponentFixture({ render: render(modernUI, { partOptions: { enableTabStacks: true }, editors: tabStacksEditorSpecs(), width: 1000, editTabStack: 0 }), additionalThemes }),
 
@@ -1015,6 +1103,26 @@ export default defineThemedFixtureGroup({ path: 'editor/editorTabBar/' }, {
 		PillTabStacksActiveMember: defineComponentFixture({
 			render: render(true, { editorTabStyle: ModernUIEditorTabStyle.Pill, partOptions: { enableTabStacks: true }, editors: activeTabStackMemberEditorSpecs(2) }),
 			additionalThemes: ['darkHighContrast'],
+		}),
+		// A drop over the right half of the last pill of a tab stack lands inside it, so the drop marker in the gap stands on a foot in its color.
+		PillTabStacksDropInside: defineComponentFixture({
+			render: render(true, { editorTabStyle: ModernUIEditorTabStyle.Pill, partOptions: { enableTabStacks: true }, editors: activeTabStackMemberEditorSpecs(0), width: 1000, dropAfterTab: { index: 3, inTabStack: true } }),
+			additionalThemes: ['darkHighContrast', 'lightHighContrast'],
+		}),
+		// A drop over the right half of the last pill of a tab stack that ends the tabs lands inside it, so the foot of the drop marker reaches into the empty space after the tabs.
+		PillTabStacksDropInsideEnd: defineComponentFixture({
+			render: render(true, { editorTabStyle: ModernUIEditorTabStyle.Pill, partOptions: { enableTabStacks: true }, editors: lastTabStackEditorSpecs(), dropAfterTab: { index: 3, inTabStack: true } }),
+			additionalThemes: ['darkHighContrast', 'lightHighContrast'],
+		}),
+		// The same drop with compact, shrinking pills, where the foot stays at the height of the line under the pills.
+		PillTabStacksDropInsideEndCompactShrink: defineComponentFixture({
+			render: render(true, { editorTabStyle: ModernUIEditorTabStyle.Pill, partOptions: { enableTabStacks: true, tabHeight: 'compact', tabSizing: 'shrink' }, editors: lastTabStackEditorSpecs(), dropAfterTab: { index: 3, inTabStack: true } }),
+			additionalThemes: ['darkHighContrast', 'lightHighContrast'],
+		}),
+		// A drop over the empty space after a tab stack that ends the pills lands outside of it, so the drop marker at the same place has no foot.
+		PillTabStacksDropOutsideEnd: defineComponentFixture({
+			render: render(true, { editorTabStyle: ModernUIEditorTabStyle.Pill, partOptions: { enableTabStacks: true }, editors: lastTabStackEditorSpecs(), dropAfterTab: { index: 3, inTabStack: false } }),
+			additionalThemes: ['darkHighContrast', 'lightHighContrast'],
 		}),
 		ThemeColors: defineThemedFixtureGroup(createThemeColorFixtures()),
 	}),

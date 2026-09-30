@@ -79,8 +79,16 @@
 	scrollbar-width: none; /* Firefox: hide scrollbar */
 }
 
+/* During a drag the browser scrolls the tabs near their ends, but only sideways, like their scrollbar does. */
 .monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container.scroll {
-	overflow: scroll !important;
+	overflow-x: scroll !important;
+	overflow-y: hidden !important;
+}
+
+/* During a drag of tabs over tabs that end with a tab stack, empty space after them drops outside of
+ * it, also when the tabs overflow or fill their container. */
+.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container.tab-stack-drop-space {
+	padding-inline-end: var(--vscode-spacing-size280);
 }
 
 /* Add tab control */
@@ -654,4 +662,59 @@
 
 .monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).last-in-row.drop-target-left:not(:last-child)::after {
 	right: 0;
+}
+
+/* A drop inside a tab stack stands the marker on a foot in the color of the tab stack, at the height
+ * of the line under its tabs, which continues that line under the drop. That tells it apart from a
+ * drop outside of the tab stack at the same place, such as right after its last tab. The foot is as
+ * wide as the color square of an unnamed tab stack and a gap between tabs on both sides, so that it
+ * shows past the line of a tab stack that ends next to the drop. The tab or header after the drop
+ * draws it, and at the end of a row or of the tabs, the one before the drop, so that it is drawn only
+ * once. */
+.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-left.drop-target-in-tab-stack:is(.drop-target-last, .last-in-row)::after,
+.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-right.drop-target-in-tab-stack::before {
+	width: calc(var(--vscode-spacing-size120) + 2 * var(--vscode-spacing-size40));
+	background:
+		linear-gradient(var(--vscode-tab-dragAndDropBorder), var(--vscode-tab-dragAndDropBorder)) center / 2px 100% no-repeat,
+		linear-gradient(var(--drop-target-tab-stack-color), var(--drop-target-tab-stack-color)) center bottom / 100% var(--vscode-spacing-size20) no-repeat;
+}
+
+/* The marker stays where it is without a foot, and the foot is centered on it, also where Modern UI
+ * moves the marker into the gap between the tabs. At the end of a row or of the tabs, the foot
+ * reaches past the marker into the space after them, such as the space after a tab stack that ends
+ * the tabs, which shows during a drag of tabs. Where a row fills the tabs, their edge cuts it off. */
+.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-left.drop-target-in-tab-stack:is(.drop-target-last, .last-in-row)::after {
+	transform: translateX(calc(50% - 1px));
+}
+
+.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-right.drop-target-in-tab-stack::before {
+	transform: translateX(calc(-50% + 1px));
+}
+
+/* At the start of a row, the foot runs from the marker into the tab or header after the drop, so
+ * that the edge of the tabs does not cut it off. */
+.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).last-in-row + :is(.tab, .tab-stack-header).drop-target-right.drop-target-in-tab-stack::before {
+	transform: none;
+	background-position: left, left bottom;
+}
+
+/* The marker and its foot stay above the border below the tabs, as the line under the tabs of a tab
+ * stack does, also where the tab before the drop shows the marker without a foot. */
+.monaco-workbench:not(.modern-ui-tabs) .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.tabs-border-bottom:not(.wrapping) .tabs-container > :is(.tab, .tab-stack-header).drop-target-left.drop-target-in-tab-stack::after,
+.monaco-workbench:not(.modern-ui-tabs) .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.tabs-border-bottom:not(.wrapping) .tabs-container > :is(.tab, .tab-stack-header).drop-target-right.drop-target-in-tab-stack::before {
+	height: calc(100% - var(--vscode-strokeThickness));
+}
+
+/* High contrast outlines the foot in the contrast border, as it does the chip of a tab stack header,
+ * which keeps a foot of any color visible. The bottom of the tabs cuts off its bottom edge. */
+.monaco-workbench:is(.hc-black, .hc-light) .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-left.drop-target-in-tab-stack:is(.drop-target-last, .last-in-row)::after,
+.monaco-workbench:is(.hc-black, .hc-light) .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-right.drop-target-in-tab-stack::before {
+	background:
+		linear-gradient(var(--vscode-tab-dragAndDropBorder), var(--vscode-tab-dragAndDropBorder)) center / 2px 100% no-repeat,
+		linear-gradient(var(--drop-target-tab-stack-color), var(--drop-target-tab-stack-color)) center bottom / calc(100% - 2 * var(--vscode-strokeThickness)) var(--vscode-spacing-size20) no-repeat,
+		linear-gradient(var(--vscode-contrastBorder), var(--vscode-contrastBorder)) center bottom / 100% calc(var(--vscode-spacing-size20) + var(--vscode-strokeThickness)) no-repeat;
+}
+
+.monaco-workbench:is(.hc-black, .hc-light) .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).last-in-row + :is(.tab, .tab-stack-header).drop-target-right.drop-target-in-tab-stack::before {
+	background-position: left, left var(--vscode-strokeThickness) bottom, left bottom;
 }

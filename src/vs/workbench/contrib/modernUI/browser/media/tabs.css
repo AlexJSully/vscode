@@ -642,7 +642,9 @@
 	pointer-events: none;
 }
 
-.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-left:not(.last-in-row):not(:last-child)::after {
+/* The tab or header after a drop shows it in the gap, so the one before it only shows a drop at the
+ * end of a row or after the last tab or header, also when the Add Tab control follows them. */
+.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-left:not(.last-in-row):not(.drop-target-last)::after {
 	display: none;
 }
 

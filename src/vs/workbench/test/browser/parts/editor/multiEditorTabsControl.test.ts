@@ -69,10 +69,12 @@ suite('MultiEditorTabsControl', () => {
 	let groupView: IEditorGroupView;
 	let groupsView: IEditorGroupsView;
 	let editorPartsView: IEditorPartsView;
+	let editorGroupCount: number;
 
 	setup(() => {
 		disposables = new DisposableStore();
 		partOptions = { ...DEFAULT_EDITOR_PART_OPTIONS };
+		editorGroupCount = 1;
 
 		// The tabs control resolves the shared modifier key emitter on creation,
 		// so dispose it again to keep each test independent of the Alt state that
@@ -133,7 +135,7 @@ suite('MultiEditorTabsControl', () => {
 		};
 
 		editorPartsView = new class extends mock<IEditorPartsView>() {
-			override get count() { return 1; }
+			override get count() { return editorGroupCount; }
 			override getGroup() { return groupView; }
 		};
 
@@ -196,9 +198,26 @@ suite('MultiEditorTabsControl', () => {
 		mainWindow.dispatchEvent(new KeyboardEvent(pressed ? EventType.KEY_DOWN : EventType.KEY_UP, { key: 'Alt', altKey: pressed }));
 	}
 
+	/**
+	 * Creates an editor for the file with the name, named like the editors
+	 * that each test starts with.
+	 */
+	function createNamedEditor(name: string): EditorInput {
+		return disposables.add(new class extends TestFileEditorInput {
+			override getName(): string { return name; }
+		}(URI.file(`/path/${name}`), 'testEditorInput'));
+	}
+
+	/**
+	 * Returns the accessible names of the tabs in order.
+	 */
+	function tabAriaLabels(): (string | null)[] {
+		return Array.from(container.querySelectorAll('.tabs-container > .tab'), tab => tab.getAttribute('aria-label'));
+	}
+
 	function connectedGroup(): HTMLElement {
 		const root = $('.monaco-workbench.modern-ui.modern-ui-tabs.modern-ui-connected-editor-tabs');
-		root.style.cssText = '--vscode-spacing-size20: 2px; --vscode-spacing-size40: 4px; --vscode-spacing-size60: 6px; --vscode-spacing-size80: 8px; --vscode-spacing-size160: 16px; --vscode-spacing-size200: 20px; --vscode-spacing-size280: 28px; --vscode-strokeThickness: 1px; --vscode-cornerRadius-small: 4px; --vscode-fontSize-body1: 13px; --vscode-fontWeight-regular: 400;';
+		root.style.cssText = '--vscode-spacing-size20: 2px; --vscode-spacing-size40: 4px; --vscode-spacing-size60: 6px; --vscode-spacing-size80: 8px; --vscode-spacing-size120: 12px; --vscode-spacing-size160: 16px; --vscode-spacing-size200: 20px; --vscode-spacing-size280: 28px; --vscode-strokeThickness: 1px; --vscode-cornerRadius-small: 4px; --vscode-fontSize-body1: 13px; --vscode-fontWeight-regular: 400;';
 		mainWindow.document.body.appendChild(root);
 		disposables.add(toDisposable(() => root.remove()));
 		const editor = $('.part.editor.editor-tabs-multiple');
@@ -298,12 +317,21 @@ suite('MultiEditorTabsControl', () => {
 
 	/**
 	 * Describes the drop feedback as the children of the tabs containers
-	 * before and after the drop position, with `∅` for none.
+	 * before and after the drop position, with `∅` for none, followed by
+	 * `in <label>` when it shows a drop inside the tab stack whose header has
+	 * that label and the same color, or `in ?` when both children do not show
+	 * that alike.
 	 */
 	function dropFeedback(): string {
 		const describe = (element: Element | null) => element ? describeTabsChild(element) : '∅';
+		const left = container.querySelector<HTMLElement>('.drop-target-left');
+		const right = container.querySelector<HTMLElement>('.drop-target-right');
+		const colors = new Set([left, right].filter(element => !!element).map(element => element.classList.contains('drop-target-in-tab-stack') ? element.style.getPropertyValue('--drop-target-tab-stack-color') : ''));
+		const [color] = colors;
+		const header = colors.size === 1 && color ? tabStackHeaders().find(header => header.style.getPropertyValue('--tab-stack-color') === color) : undefined;
+		const tabStack = header ? ` in ${header.querySelector('.tab-stack-header-label')!.textContent || '∅'}` : ` in ?`;
 
-		return `${describe(container.querySelector('.drop-target-left'))} | ${describe(container.querySelector('.drop-target-right'))}`;
+		return `${describe(left)} | ${describe(right)}${colors.size > 1 || color ? tabStack : ''}`;
 	}
 
 	/**
@@ -984,6 +1012,65 @@ suite('MultiEditorTabsControl', () => {
 			unstableLayouts: [],
 			minimumConstrained: true,
 		});
+	});
+
+	test('wrapped tabs stop wrapping once they fit on one row again, also as Modern UI tabs', async () => {
+		partOptions = { ...partOptions, wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, editorActionsLocation: 'hidden' };
+		const states = [];
+		for (const tabStyle of ['connected', 'modern', 'classic'] as const) {
+			const group = connectedGroup();
+			const workbench = group.closest('.monaco-workbench')!;
+			if (tabStyle !== 'connected') {
+				workbench.classList.remove('modern-ui-connected-editor-tabs');
+			}
+			if (tabStyle === 'classic') {
+				workbench.classList.remove('modern-ui', 'modern-ui-tabs');
+			}
+			control.dispose();
+			container.replaceChildren();
+			control = createControl();
+			const tabsAndActionsContainer = container.querySelector<HTMLElement>('.tabs-and-actions-container')!;
+
+			await layoutConnectedGroup(group, 150);
+			const wrappedWhenNarrow = tabsAndActionsContainer.classList.contains('wrapping');
+			await layoutConnectedGroup(group, 900);
+
+			states.push({ tabStyle, wrappedWhenNarrow, wrappedWhenWide: tabsAndActionsContainer.classList.contains('wrapping'), heightWhenWide: control.getHeight() });
+		}
+
+		assert.deepStrictEqual(states, [
+			{ tabStyle: 'connected', wrappedWhenNarrow: true, wrappedWhenWide: false, heightWhenWide: 33 },
+			{ tabStyle: 'modern', wrappedWhenNarrow: true, wrappedWhenWide: false, heightWhenWide: 32 },
+			{ tabStyle: 'classic', wrappedWhenNarrow: true, wrappedWhenWide: false, heightWhenWide: 35 },
+		]);
+	});
+
+	test('fit-sized connected tabs settle wrapping on the first layout while the width grows and shrinks', async () => {
+		const group = connectedGroup();
+		for (let i = 2; i < 8; i++) {
+			model.openEditor(createNamedEditor(`file${i}.txt`), { pinned: true, index: i });
+		}
+		control.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL));
+		const oldOptions = partOptions;
+		partOptions = { ...partOptions, wrapTabs: true };
+		control.updateOptions(oldOptions, partOptions);
+		const tabsAndActionsContainer = container.querySelector<HTMLElement>('.tabs-and-actions-container')!;
+		const tabs = Array.from(container.querySelectorAll<HTMLElement>('.tabs-container > .tab'));
+		const describeLayout = () => ({ wrapping: tabsAndActionsContainer.classList.contains('wrapping'), rows: new Set(tabs.map(tab => tab.offsetTop)).size });
+
+		const widths = Array.from({ length: 41 }, (_, index) => 500 + index * 15);
+		const unstableLayouts = [];
+		for (const width of [...widths, ...widths.reverse()]) {
+			await layoutConnectedGroup(group, width);
+			const firstLayout = describeLayout();
+			await layoutConnectedGroup(group, width);
+			const secondLayout = describeLayout();
+			if (firstLayout.wrapping !== secondLayout.wrapping || firstLayout.rows !== secondLayout.rows) {
+				unstableLayouts.push({ width, firstLayout, secondLayout });
+			}
+		}
+
+		assert.deepStrictEqual(unstableLayouts, []);
 	});
 
 	test('the first nonempty connected tab bar owns the top row after the pinned row empties', async () => {
@@ -1783,6 +1870,120 @@ suite('MultiEditorTabsControl', () => {
 		]);
 	});
 
+	test('announces only the pinned tabs as pinned when pinned tabs are on a separate row', () => {
+		partOptions = { ...partOptions, pinnedTabsOnSeparateRow: true };
+		for (let i = 2; i < 5; i++) {
+			model.openEditor(createNamedEditor(`file${i}.txt`), { pinned: true, index: i });
+		}
+		for (const editor of model.getEditors(EditorsOrder.SEQUENTIAL).slice(0, 2)) {
+			model.stick(editor);
+		}
+		control.dispose();
+		container.replaceChildren();
+		const multiRowControl = disposables.add(instantiationService.createInstance(MultiRowEditorControl, container, editorPartsView, groupsView, groupView, model, undefined, false, false));
+		multiRowControl.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL));
+
+		const tabBars = Array.from(container.querySelectorAll('.tabs-container'));
+		assert.deepStrictEqual(tabBars.map(tabBar => Array.from(tabBar.querySelectorAll('.tab'), tab => tab.getAttribute('aria-label'))), [
+			['file0.txt, pinned', 'file1.txt, pinned'],
+			['file2.txt', 'file3.txt', 'file4.txt'],
+		]);
+	});
+
+	test('announces a tab as pinned once it is pinned and no longer once it is unpinned', () => {
+		const [first, second] = model.getEditors(EditorsOrder.SEQUENTIAL);
+		model.stick(first);
+		control.dispose();
+		container.replaceChildren();
+		control = createControl();
+		const initial = tabAriaLabels();
+
+		model.unstick(first);
+		control.unstickEditor(first);
+		const afterUnpin = tabAriaLabels();
+
+		// A pin moves the editor to the end of the pinned editors, which the editor group tells the tabs first
+		model.stick(second);
+		control.moveEditor(second, 1, 0);
+		control.stickEditor(second);
+
+		assert.deepStrictEqual({ initial, afterUnpin, afterPin: tabAriaLabels() }, {
+			initial: ['file0.txt, pinned', 'file1.txt'],
+			afterUnpin: ['file0.txt', 'file1.txt'],
+			afterPin: ['file1.txt, pinned', 'file0.txt'],
+		});
+	});
+
+	test('draws the tab of an editor that opened before a pin but reached the tabs after it', () => {
+		const [, second] = model.getEditors(EditorsOrder.SEQUENTIAL);
+
+		// The editor group opens several editors at once and tells the tabs once all of them opened,
+		// after it told them of a pin that opening one of them caused
+		const opened = createNamedEditor('file2.txt');
+		model.openEditor(opened, { pinned: true, active: false, index: 2 });
+		model.stick(second);
+		control.moveEditor(second, 1, 0);
+		control.stickEditor(second);
+		control.openEditors([opened]);
+
+		assert.deepStrictEqual(tabAriaLabels(), ['file1.txt, pinned', 'file0.txt', 'file2.txt']);
+	});
+
+	test('announces a preview tab as a preview no longer once it is kept open', () => {
+		const preview = createNamedEditor('file2.txt');
+		model.openEditor(preview, { pinned: false, index: 2 });
+		control.openEditor(preview);
+		const initial = tabAriaLabels();
+
+		model.pin(preview);
+		control.pinEditor(preview);
+
+		assert.deepStrictEqual({ initial, keptOpen: tabAriaLabels() }, {
+			initial: ['file0.txt', 'file1.txt', 'file2.txt, preview'],
+			keptOpen: ['file0.txt', 'file1.txt', 'file2.txt'],
+		});
+	});
+
+	test('draws the tab of an editor that opened before a preview was kept open but reached the tabs after it', () => {
+		const preview = createNamedEditor('file2.txt');
+		model.openEditor(preview, { pinned: false, index: 2 });
+		control.openEditor(preview);
+
+		// The editor group opens several editors at once and tells the tabs once all of them opened,
+		// after it told them that opening one of them kept a preview open
+		const opened = createNamedEditor('file3.txt');
+		model.openEditor(opened, { pinned: true, active: false, index: 3 });
+		model.pin(preview);
+		control.pinEditor(preview);
+		control.openEditors([opened]);
+
+		assert.deepStrictEqual(tabAriaLabels(), ['file0.txt', 'file1.txt', 'file2.txt', 'file3.txt']);
+	});
+
+	test('a pin or a preview kept open redraws the accessible name of every tab whose label changed with it, such as for a new number of groups', () => {
+		const [first] = model.getEditors(EditorsOrder.SEQUENTIAL);
+		const preview = createNamedEditor('file2.txt');
+		model.openEditor(preview, { pinned: false, index: 2 });
+		control.openEditor(preview);
+		const initial = tabAriaLabels();
+
+		// Nothing tells the tabs of a new number of groups, but the next recompute of their labels counts it
+		editorGroupCount = 2;
+		model.stick(first);
+		control.stickEditor(first);
+		const afterPin = tabAriaLabels();
+
+		editorGroupCount = 1;
+		model.pin(preview);
+		control.pinEditor(preview);
+
+		assert.deepStrictEqual({ initial, afterPin, afterPreviewKeptOpen: tabAriaLabels() }, {
+			initial: ['file0.txt', 'file1.txt', 'file2.txt, preview'],
+			afterPin: ['file0.txt, pinned, Editor Group 1', 'file1.txt, Editor Group 1', 'file2.txt, preview, Editor Group 1'],
+			afterPreviewKeptOpen: ['file0.txt, pinned', 'file1.txt', 'file2.txt'],
+		});
+	});
+
 	test('makes no DOM mutations to the tabs container and adds no tab stack indicators without tab stacks', () => {
 		const tabsContainer = container.querySelector<HTMLElement>('.tabs-container')!;
 		const observer = new MutationObserver(() => { });
@@ -1987,6 +2188,15 @@ suite('MultiEditorTabsControl', () => {
 			scrolled: true,
 			keptScrollLeft: true,
 		});
+	});
+
+	test('while a drag is over the tabs they scroll only sideways, so the top edge of the tabs stays in view', async () => {
+		const group = connectedGroup();
+		await layoutConnectedGroup(group, 300);
+		dispatchDrag(EventType.DRAG_ENTER, '', 'left');
+		const { overflowX, overflowY } = mainWindow.getComputedStyle(tabsChild(''));
+
+		assert.deepStrictEqual({ overflowX, overflowY }, { overflowX: 'scroll', overflowY: 'hidden' });
 	});
 
 	test('an action of the menu of a tab stack header that changes nothing does not stop the next reveal of the active tab', async () => {
@@ -2546,7 +2756,35 @@ suite('MultiEditorTabsControl', () => {
 		return editors;
 	}
 
-	test('a drag of tabs over tabs with tab stacks shows the drop between two tabs, on the start slot of a tab stack after its header, before a header over its left half and after a collapsed tab stack over the right half of its header', async () => {
+	/**
+	 * Replaces the group with one whose tabs are laid out 120 pixels wide in a
+	 * group of the width, with the tab stack `S` of `b` and `c` in the color
+	 * `rgb(1, 2, 3)` and a white drop marker, and starts a drag of `b`.
+	 */
+	async function createDropMarkerTabStacksGroup(names: readonly string[], width: number, options?: Partial<IEditorPartOptions>): Promise<void> {
+		const group = classicGroup();
+		group.style.setProperty('--vscode-tab-dragAndDropBorder', 'white');
+		const [, b, c] = createTabStacksGroup(names, { tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, ...options });
+		addTabStack([b, c], { label: 'S', color: '#010203' });
+		await layoutConnectedGroup(group, width);
+		dragEditors([b]);
+	}
+
+	/**
+	 * Describes the drop marker that a pseudo-element of a tab draws: whether
+	 * it stands on a foot in the color of the tab stack of
+	 * {@link createDropMarkerTabStacksGroup}, and the pixels from the left edge
+	 * of the tab where the marker and its foot start and end.
+	 */
+	function describeDropMarker(tab: HTMLElement, pseudoElement: '::before' | '::after'): { foot: boolean; from: number; to: number } {
+		const style = mainWindow.getComputedStyle(tab, pseudoElement);
+		const translateX = style.transform === 'none' ? 0 : new DOMMatrixReadOnly(style.transform).m41;
+		const from = parseFloat(mainWindow.getComputedStyle(tab).borderLeftWidth) + parseFloat(style.left) + translateX;
+
+		return { foot: style.backgroundImage.includes('rgb(1, 2, 3)'), from: Math.round(from), to: Math.round(from + parseFloat(style.width)) };
+	}
+
+	test('a drag of tabs over tabs with tab stacks shows the drop inside a tab stack between its tabs, on its start slot after its header and over the right half of its last tab, and outside of it before a header over its left half, over the left half of the tab after it and after a collapsed tab stack over the right half of its header', async () => {
 		const [a] = await createDropTabStacksGroup();
 		const tabs = strip();
 		dragEditors([a]);
@@ -2570,11 +2808,11 @@ suite('MultiEditorTabsControl', () => {
 		assert.deepStrictEqual({ tabs, feedback }, {
 			tabs: ['T:a', 'H:Auth', 'T:b*', 'T:c*', 'T:d*', 'T:e', 'H:Docs(collapsed)', 'T:g'],
 			feedback: [
-				'T:c* left: T:b* | T:c*',
-				'H:Auth right: H:Auth | T:b*',
-				'T:b* left: H:Auth | T:b*',
+				'T:c* left: T:b* | T:c* in Auth',
+				'H:Auth right: H:Auth | T:b* in Auth',
+				'T:b* left: H:Auth | T:b* in Auth',
 				'H:Auth left: T:a | H:Auth',
-				'T:d* right: T:d* | T:e',
+				'T:d* right: T:d* | T:e in Auth',
 				'T:e left: T:d* | T:e',
 				'H:Docs(collapsed) left: T:e | H:Docs(collapsed)',
 				'H:Docs(collapsed) right: H:Docs(collapsed) | T:g',
@@ -2613,14 +2851,299 @@ suite('MultiEditorTabsControl', () => {
 		dispatchDrag(EventType.DRAG_LEAVE, 'T:c*', 'left');
 		dispatchDrag(EventType.DRAG_OVER, 'H:Auth', 'left');
 		const overHeader = dropFeedback();
-		const markers = container.querySelectorAll('.drop-target-left, .drop-target-right').length;
+		const markers = container.querySelectorAll('.drop-target-left, .drop-target-right, .drop-target-in-tab-stack').length;
 		dispatchDrag(EventType.DRAG_LEAVE, 'H:Auth', 'left');
 
 		assert.deepStrictEqual({ overTab, overHeader, markers, afterLeave: dropFeedback() }, {
-			overTab: 'T:b* | T:c*',
+			overTab: 'T:b* | T:c* in Auth',
 			overHeader: 'T:a | H:Auth',
 			markers: 2,
 			afterLeave: '∅ | ∅',
+		});
+	});
+
+	test('the drop feedback of a drag of tabs over the end of a tab stack shows the drop inside it over the right half of its last tab, and outside of it over the left half of the tab after it and over a collapsed tab stack, without leaving the tabs', async () => {
+		const [, , c] = await createDropTabStacksGroup();
+		dragEditors([c]);
+
+		dispatchDrag(EventType.DRAG_ENTER, 'T:d*', 'right');
+		dispatchDrag(EventType.DRAG_OVER, 'T:d*', 'right');
+		const overLastTab = dropFeedback();
+		dispatchDrag(EventType.DRAG_ENTER, 'T:e', 'left');
+		dispatchDrag(EventType.DRAG_LEAVE, 'T:d*', 'right');
+		dispatchDrag(EventType.DRAG_OVER, 'T:e', 'left');
+		const overTabAfter = dropFeedback();
+		dispatchDrag(EventType.DRAG_ENTER, 'H:Docs(collapsed)', 'left');
+		dispatchDrag(EventType.DRAG_LEAVE, 'T:e', 'left');
+		dispatchDrag(EventType.DRAG_OVER, 'H:Docs(collapsed)', 'left');
+		const overCollapsedHeader = [dropFeedback()];
+		dispatchDrag(EventType.DRAG_OVER, 'H:Docs(collapsed)', 'right');
+		overCollapsedHeader.push(dropFeedback());
+
+		assert.deepStrictEqual({ overLastTab, overTabAfter, overCollapsedHeader }, {
+			overLastTab: 'T:d* | T:e in Auth',
+			overTabAfter: 'T:d* | T:e',
+			overCollapsedHeader: ['T:e | H:Docs(collapsed)', 'H:Docs(collapsed) | T:g'],
+		});
+	});
+
+	test('a drag of tabs over a tab stack that ends the tabs shows the drop inside it over the right half of its last tab, and outside of it over the empty space of the tabs', async () => {
+		const group = classicGroup();
+		const [, b, c] = createTabStacksGroup(['a', 'b', 'c']);
+		addTabStack([b, c], { label: 'S' });
+		await layoutConnectedGroup(group, 1200);
+		dragEditors([b]);
+
+		const feedback = [];
+		for (const [description, side] of [['T:c*', 'right'], ['', 'left']] as const) {
+			feedback.push(`${description || 'tabs'} ${side}: ${dragOver(description, side)}`);
+		}
+
+		assert.deepStrictEqual(feedback, [
+			'T:c* right: T:c* | ∅ in S',
+			'tabs left: T:c* | ∅',
+		]);
+	});
+
+	test('the marker of a drop inside a tab stack that ends the tabs stands on a foot that reaches past its last tab into the empty space after the tabs, which the marker of a drop outside of it there does not have', async () => {
+		await createDropMarkerTabStacksGroup(['a', 'b', 'c'], 1200);
+
+		const markers = [];
+		for (const [description, side] of [['T:c*', 'right'], ['', 'left']] as const) {
+			markers.push(`${description || 'tabs'} ${side}: ${dragOver(description, side)}`);
+			markers.push(describeDropMarker(tabsChild('T:c*'), '::after'));
+		}
+
+		assert.deepStrictEqual({ tabWidth: tabsChild('T:c*').offsetWidth, markers }, {
+			tabWidth: 120,
+			markers: [
+				'T:c* right: T:c* | ∅ in S',
+				{ foot: true, from: 111, to: 131 },
+				'tabs left: T:c* | ∅',
+				{ foot: false, from: 120, to: 122 },
+			],
+		});
+	});
+
+	/**
+	 * Returns the top and the bottom of the element in pixels from the top of
+	 * the tabs container, or of the drop marker that its pseudo-element draws.
+	 */
+	function describeRowExtent(element: HTMLElement, pseudoElement?: '::before' | '::after'): { top: number; bottom: number } {
+		const rect = element.getBoundingClientRect();
+		const containerTop = tabsChild('').getBoundingClientRect().top;
+		if (!pseudoElement) {
+			return { top: Math.round(rect.top - containerTop), bottom: Math.round(rect.bottom - containerTop) };
+		}
+
+		const style = mainWindow.getComputedStyle(element, pseudoElement);
+		const top = rect.top - containerTop + parseFloat(mainWindow.getComputedStyle(element).borderTopWidth) + parseFloat(style.top);
+
+		return { top: Math.round(top), bottom: Math.round(top + parseFloat(style.height)) };
+	}
+
+	test('where connected tabs wrap, the marker of a drop on a tab stack header in the row that joins the document is as tall as the tabs of that row, and the foot of the marker of a drop inside a tab stack stands where the line under its tabs does', async () => {
+		const group = connectedGroup();
+		group.style.setProperty('--vscode-tab-dragAndDropBorder', 'white');
+		const [, b, c, d] = createTabStacksGroup(['a', 'b', 'c', 'd'], { wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, editorActionsLocation: 'hidden' });
+		addTabStack([b, c], { label: 'S', color: '#010203' });
+		addTabStack([d], { label: 'T' });
+		await layoutConnectedGroup(group, 330);
+		dragEditors([b]);
+
+		const markers = [];
+		for (const [description, side] of [['T:c*', 'right'], ['H:T', 'left']] as const) {
+			markers.push(`${description} ${side}: ${dragOver(description, side)}`);
+			markers.push({ foot: describeDropMarker(tabsChild('H:T'), '::before').foot, ...describeRowExtent(tabsChild('H:T'), '::before') });
+		}
+
+		assert.deepStrictEqual({
+			lastRow: strip().slice(-3),
+			tab: describeRowExtent(tabsChild('T:c*')),
+			indicator: describeRowExtent(tabsChild('T:c*').querySelector<HTMLElement>('.tab-stack-indicator')!),
+			markers
+		}, {
+			lastRow: ['T:c*', 'H:T', 'T:d*'],
+			tab: { top: 30, bottom: 58 },
+			indicator: { top: 56, bottom: 58 },
+			markers: [
+				'T:c* right: T:c* | H:T in S',
+				{ foot: true, top: 30, bottom: 58 },
+				'H:T left: T:c* | H:T',
+				{ foot: false, top: 30, bottom: 58 },
+			],
+		});
+	});
+
+	test('where a tab stack ends a row of wrapped tabs, the marker of a drop inside it stands at the start of the next row on a foot that runs into the tab there, which the marker of a drop outside of it there does not have', async () => {
+		await createDropMarkerTabStacksGroup(['a', 'b', 'c', 'd'], 460, { wrapTabs: true, editorActionsLocation: 'hidden' });
+
+		const markers = [];
+		for (const [description, side] of [['T:c*', 'right'], ['T:d', 'left']] as const) {
+			markers.push(`${description} ${side}: ${dragOver(description, side)}`);
+			markers.push(describeDropMarker(tabsChild('T:d'), '::before'));
+		}
+
+		assert.deepStrictEqual({ rowEnd: tabsChild('T:c*').classList.contains('last-in-row'), markers }, {
+			rowEnd: true,
+			markers: [
+				'T:c* right: T:c* | T:d in S',
+				{ foot: true, from: 0, to: 20 },
+				'T:d left: T:c* | T:d',
+				{ foot: false, from: 0, to: 2 },
+			],
+		});
+	});
+
+	test('a drag of tabs over tabs that overflow and end with a tab stack shows the drop outside of it right past its last tab once the tabs scroll to their end', async () => {
+		const group = classicGroup();
+		const editors = createTabStacksGroup(['a', 'b', 'c', 'd', 'e', 'f']);
+		addTabStack(editors.slice(4), { label: 'S' });
+		await layoutConnectedGroup(group, 300);
+		dragEditors([editors[1]]);
+
+		// While a drag is near the end of the tabs, the browser scrolls them to their end
+		dispatchDrag(EventType.DRAG_ENTER, 'T:f*', 'right');
+		const tabsContainer = tabsChild('');
+		tabsContainer.scrollLeft = tabsContainer.scrollWidth;
+		await nextAnimationFrame();
+
+		// The drag goes on to the right end of the visible tabs, over whatever is there
+		const viewport = container.querySelector<HTMLElement>('.monaco-scrollable-element')!.getBoundingClientRect();
+		const point = { clientX: viewport.right - 2, clientY: viewport.top + viewport.height / 2 };
+		const target = mainWindow.document.elementFromPoint(point.clientX, point.clientY)!;
+		for (const type of [EventType.DRAG_ENTER, EventType.DRAG_OVER]) {
+			target.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: new DataTransfer(), ...point }));
+		}
+
+		assert.deepStrictEqual(dropFeedback(), 'T:f* | ∅');
+	});
+
+	test('a drag of tabs over tabs that overflow, end with a tab stack and are scrolled to their end scrolls them on to show the empty space after the tab stack', async () => {
+		const group = classicGroup();
+		const editors = createTabStacksGroup(['a', 'b', 'c', 'd', 'e', 'f']);
+		addTabStack(editors.slice(4), { label: 'S' });
+		model.openEditor(editors[5], { active: true });
+		control.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL));
+		await layoutConnectedGroup(group, 300);
+		dragEditors([editors[1]]);
+
+		const viewport = container.querySelector<HTMLElement>('.monaco-scrollable-element')!.getBoundingClientRect();
+		const spaceAfterLastTab = () => Math.round(viewport.right) - Math.round(tabsChild('T:f*').getBoundingClientRect().right);
+		const before = spaceAfterLastTab();
+		dispatchDrag(EventType.DRAG_ENTER, 'T:f*', 'right');
+
+		assert.deepStrictEqual({ before, during: spaceAfterLastTab() }, { before: 0, during: 28 });
+	});
+
+	test('after a drop on a tab from outside of the tabs, such as from another group, the next drag of tabs that leaves the tabs takes its drop feedback and the empty space after a tab stack that ends the tabs with it', async () => {
+		const group = classicGroup();
+		const [a, b, c] = createTabStacksGroup(['a', 'b', 'c']);
+		addTabStack([b, c], { label: 'S' });
+		await layoutConnectedGroup(group, 1200);
+
+		// The tab takes the drop, so it does not reach the tabs container
+		dispatchDrag(EventType.DRAG_ENTER, 'T:a', 'left');
+		dispatchDrag(EventType.DROP, 'T:a', 'left');
+
+		dragEditors([a]);
+		dispatchDrag(EventType.DRAG_ENTER, 'T:a', 'left');
+		dispatchDrag(EventType.DRAG_LEAVE, 'T:a', 'left');
+
+		assert.deepStrictEqual({ dropFeedback: dropFeedback(), dropSpace: tabsChild('').classList.contains('tab-stack-drop-space') }, {
+			dropFeedback: '∅ | ∅',
+			dropSpace: false,
+		});
+	});
+
+	test('a drag of tabs over connected tabs that wrapped and fit on one row again adds the empty space after a tab stack that ends the tabs', async () => {
+		const group = connectedGroup();
+		const [a, b, c] = createTabStacksGroup(['a', 'b', 'c'], { wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, editorActionsLocation: 'hidden' });
+		addTabStack([b, c], { label: 'S' });
+		await layoutConnectedGroup(group, 150);
+		await layoutConnectedGroup(group, 900);
+
+		dragEditors([a]);
+		dispatchDrag(EventType.DRAG_ENTER, 'T:a', 'left');
+
+		assert.deepStrictEqual({
+			wrapping: container.querySelector('.tabs-and-actions-container')!.classList.contains('wrapping'),
+			dropSpace: tabsChild('').classList.contains('tab-stack-drop-space'),
+		}, {
+			wrapping: false,
+			dropSpace: true,
+		});
+	});
+
+	test('a drag over the empty space of the tabs shows the drop after the last tab, also when the Add Tab control follows the tabs', async () => {
+		const group = connectedGroup();
+		control.dispose();
+		reset(container);
+		control = createControl({ tabsBarAddTab: MenuId.for('test.dropFeedback.addTab') });
+		await layoutConnectedGroup(group, 600);
+		dragEditors([model.getEditorByIndex(0)!]);
+
+		const feedback = dragOver('', 'left');
+		const { content, display } = mainWindow.getComputedStyle(tabsChild('T:file1.txt'), '::after');
+
+		assert.deepStrictEqual({ tabs: strip(), feedback, marker: { content, display } }, {
+			tabs: ['T:file0.txt', 'T:file1.txt', '+'],
+			feedback: 'T:file1.txt | ∅',
+			marker: { content: '""', display: 'block' },
+		});
+	});
+
+	test('a drag that moves on from the last tab over the Add Tab control shows no drop there, where a drop does nothing, and the drop after the last tab again over the empty space of the tabs', async () => {
+		const group = connectedGroup();
+		control.dispose();
+		reset(container);
+		control = createControl({ tabsBarAddTab: MenuId.for('test.dropFeedback.addTab') });
+		await layoutConnectedGroup(group, 600);
+		dragEditors([model.getEditorByIndex(0)!]);
+
+		const feedback = [];
+		for (const [description, side] of [['T:file1.txt', 'right'], ['+', 'left'], ['', 'right']] as const) {
+			feedback.push(`${description || 'tabs'} ${side}: ${dragOver(description, side)}`);
+		}
+
+		// A drag over the Add Tab control enters the action inside it
+		const addTabAction = tabsChild('+').querySelector('.action-label')!;
+		addTabAction.dispatchEvent(new DragEvent(EventType.DRAG_ENTER, { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }));
+		feedback.push(`+ action: ${dropFeedback()}`);
+		addTabAction.dispatchEvent(new DragEvent(EventType.DROP, { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }));
+
+		assert.deepStrictEqual({ feedback, tabs: strip(), editors: model.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.getName()) }, {
+			feedback: [
+				'T:file1.txt right: T:file1.txt | ∅',
+				'+ left: ∅ | ∅',
+				'tabs right: T:file1.txt | ∅',
+				'+ action: ∅ | ∅',
+			],
+			tabs: ['T:file0.txt', 'T:file1.txt', '+'],
+			editors: ['file0.txt', 'file1.txt'],
+		});
+	});
+
+	test('a drag of tabs that moves on from a drop inside a tab stack that ends the tabs over the Add Tab control shows no drop there, and the empty space after the tab stack, which follows the Add Tab control, shows the drop outside of it', async () => {
+		const group = connectedGroup();
+		const [, b, c] = createTabStacksGroup(['a', 'b', 'c'], undefined, { tabsBarAddTab: MenuId.for('test.dropFeedback.addTab') });
+		addTabStack([b, c], { label: 'S' });
+		await layoutConnectedGroup(group, 1200);
+		dragEditors([b]);
+
+		const feedback = [];
+		for (const [description, side] of [['T:c*', 'right'], ['+', 'left'], ['', 'right']] as const) {
+			const drop = dragOver(description, side);
+			feedback.push(`${description || 'tabs'} ${side}: ${drop}${tabsChild('').classList.contains('tab-stack-drop-space') ? ', with the empty space after the tab stack' : ''}`);
+		}
+
+		assert.deepStrictEqual({ tabs: strip(), feedback }, {
+			tabs: ['T:a', 'H:S', 'T:b*', 'T:c*', '+'],
+			feedback: [
+				'T:c* right: T:c* | ∅ in S, with the empty space after the tab stack',
+				'+ left: ∅ | ∅, with the empty space after the tab stack',
+				'tabs right: T:c* | ∅, with the empty space after the tab stack',
+			],
 		});
 	});
 

@@ -6,14 +6,16 @@
 import './media/openeditors.css';
 import * as nls from '../../../../../nls.js';
 import { RunOnceScheduler } from '../../../../../base/common/async.js';
+import { coalesce, distinct } from '../../../../../base/common/arrays.js';
 import { IAction, ActionRunner, WorkbenchActionExecutedEvent, WorkbenchActionExecutedClassification } from '../../../../../base/common/actions.js';
 import * as dom from '../../../../../base/browser/dom.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IEditorGroupsService, IEditorGroup, GroupsOrder, GroupOrientation } from '../../../../services/editor/common/editorGroupsService.js';
+import { IEditorResolverService } from '../../../../services/editor/common/editorResolverService.js';
 import { IConfigurationService, IConfigurationChangeEvent } from '../../../../../platform/configuration/common/configuration.js';
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
-import { Verbosity, EditorResourceAccessor, SideBySideEditor, IEditorIdentifier, GroupModelChangeKind, preventEditorClose, EditorCloseMethod } from '../../../../common/editor.js';
+import { Verbosity, EditorResourceAccessor, SideBySideEditor, IEditorIdentifier, GroupModelChangeKind, preventEditorClose, EditorCloseMethod, EditorsOrder } from '../../../../common/editor.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { SaveAllInGroupAction, CloseGroupAction } from '../fileActions.js';
 import { OpenEditorsFocusedContext, ExplorerFocusedContext, IFilesConfiguration, OpenEditor } from '../../common/files.js';
@@ -30,8 +32,8 @@ import { DisposableMap, IDisposable, dispose } from '../../../../../base/common/
 import { MenuId, Action2, registerAction2, MenuRegistry } from '../../../../../platform/actions/common/actions.js';
 import { OpenEditorsDirtyEditorContext, OpenEditorsGroupContext, OpenEditorsReadonlyEditorContext, SAVE_ALL_LABEL, SAVE_ALL_COMMAND_ID, NEW_UNTITLED_FILE_COMMAND_ID, OpenEditorsSelectedFileOrUntitledContext } from '../fileConstants.js';
 import { ResourceContextKey, MultipleEditorGroupsContext } from '../../../../common/contextkeys.js';
-import { CodeDataTransfers, containsDragType } from '../../../../../platform/dnd/browser/dnd.js';
-import { ResourcesDropHandler, fillEditorsDragData } from '../../../../browser/dnd.js';
+import { CodeDataTransfers, containsDragType, extractEditorsDropData, IDraggedResourceEditorInput } from '../../../../../platform/dnd/browser/dnd.js';
+import { ResourcesDropHandler, fillEditorsDragData, findEditorOfDroppedEditor, moveEditorsOfDroppedEditors } from '../../../../browser/dnd.js';
 import { ViewPane } from '../../../../browser/parts/views/viewPane.js';
 import { IViewletViewOptions } from '../../../../browser/parts/views/viewsViewlet.js';
 import { IDragAndDropData, DataTransfers } from '../../../../../base/browser/dnd.js';
@@ -54,6 +56,7 @@ import { extUriIgnorePathCase } from '../../../../../base/common/resources.js';
 import { ILocalizedString } from '../../../../../platform/action/common/action.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { EditorGroupView } from '../../../../browser/parts/editor/editorGroupView.js';
+import { isWholeTabStack, opensEditorBetweenEditorsOfDroppedEditors } from '../../../../browser/parts/editor/editor.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { getDefaultHoverDelegate } from '../../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { StandardKeyboardEvent } from '../../../../../base/browser/keyboardEvent.js';
@@ -114,7 +117,8 @@ export class OpenEditorsView extends ViewPane {
 		@IWorkingCopyService private readonly workingCopyService: IWorkingCopyService,
 		@IFilesConfigurationService private readonly filesConfigurationService: IFilesConfigurationService,
 		@IOpenerService openerService: IOpenerService,
-		@IFileService private readonly fileService: IFileService
+		@IFileService private readonly fileService: IFileService,
+		@IEditorResolverService private readonly editorResolverService: IEditorResolverService
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
@@ -254,7 +258,7 @@ export class OpenEditorsView extends ViewPane {
 			this.listLabels.clear();
 		}
 
-		this.dnd = new OpenEditorsDragAndDrop(this.sortOrder, this.instantiationService, this.editorGroupService);
+		this.dnd = new OpenEditorsDragAndDrop(this.sortOrder, this.instantiationService, this.editorGroupService, this.editorResolverService);
 
 		this.listLabels = this.instantiationService.createInstance(ResourceLabels, { onDidChangeVisibility: this.onDidChangeBodyVisibility });
 		this.list = this.instantiationService.createInstance(WorkbenchList, 'OpenEditors', container, delegate, [
@@ -788,7 +792,10 @@ class OpenEditorRenderer implements IListRenderer<OpenEditor, IOpenEditorTemplat
 	}
 }
 
-class OpenEditorsDragAndDrop implements IListDragAndDrop<OpenEditor | IEditorGroup> {
+/**
+ * The drag and drop of the editors and groups of the Open Editors view.
+ */
+export class OpenEditorsDragAndDrop implements IListDragAndDrop<OpenEditor | IEditorGroup> {
 
 	private _sortOrder: 'editorOrder' | 'alphabetical' | 'fullPath';
 	public set sortOrder(value: 'editorOrder' | 'alphabetical' | 'fullPath') {
@@ -798,7 +805,8 @@ class OpenEditorsDragAndDrop implements IListDragAndDrop<OpenEditor | IEditorGro
 	constructor(
 		sortOrder: 'editorOrder' | 'alphabetical' | 'fullPath',
 		private instantiationService: IInstantiationService,
-		private editorGroupService: IEditorGroupsService
+		private editorGroupService: IEditorGroupsService,
+		private readonly editorResolverService: IEditorResolverService
 	) {
 		this._sortOrder = sortOrder;
 	}
@@ -895,8 +903,10 @@ class OpenEditorsDragAndDrop implements IListDragAndDrop<OpenEditor | IEditorGro
 
 		if (data instanceof ElementsDragAndDropData) {
 			for (const oe of data.elements) {
-				const sourceEditorIndex = oe.group.getIndexOfEditor(oe.editor);
-				if (oe.group === group && sourceEditorIndex < targetEditorIndex) {
+
+				// An editor that the group has already moves within it, so it does not count before the drop
+				const existingEditorIndex = group.getIndexOfEditor(oe.editor);
+				if (existingEditorIndex >= 0 && existingEditorIndex < targetEditorIndex) {
 					targetEditorIndex--;
 				}
 				oe.group.moveEditor(oe.editor, group, { index: targetEditorIndex, preserveFocus: true });
@@ -904,8 +914,50 @@ class OpenEditorsDragAndDrop implements IListDragAndDrop<OpenEditor | IEditorGro
 			}
 			this.editorGroupService.activateGroup(group);
 		} else {
-			this.dropHandler.handleDrop(originalEvent, mainWindow, () => group, () => group.focus(), { index: targetEditorIndex });
+
+			// The group opens the first dropped editor at the index and the others after it, so the
+			// editors that it has already for the dropped editors move next to each other first. The
+			// data of a drop can only be read while its event is handled.
+			const droppedEditors = extractEditorsDropData(originalEvent);
+			const dropIndex = this.prepareTabStacksOfDroppedEditors(group, droppedEditors, targetEditorIndex);
+			const index = moveEditorsOfDroppedEditors(group, droppedEditors, dropIndex, this.editorResolverService);
+			this.dropHandler.handleDrop(originalEvent, mainWindow, () => group, () => group.focus(), { index });
 		}
+	}
+
+	/**
+	 * Decides the tab stacks of the editors that the group has already for
+	 * dropped editors, such as files, as a drop of them on the tabs does. The
+	 * editors that a drop opens go outside of tab stacks, so those editors
+	 * leave their tab stacks, unless they are all of the editors of one tab
+	 * stack and no editor that the group does not have yet opens between them:
+	 * that tab stack then moves as one before the first other editor at or
+	 * after the index. Returns the index to drop at afterwards, before that
+	 * same other editor.
+	 */
+	private prepareTabStacksOfDroppedEditors(group: IEditorGroup, droppedEditors: readonly IDraggedResourceEditorInput[], index: number): number {
+		if (group.tabStacks.length === 0) {
+			return index;
+		}
+
+		const editorsOfDroppedEditors = droppedEditors.map(droppedEditor => findEditorOfDroppedEditor(group, droppedEditor, this.editorResolverService));
+		const editors = distinct(coalesce(editorsOfDroppedEditors));
+		if (editors.every(editor => !group.getTabStack(editor))) {
+			return index;
+		}
+
+		const editorAfter = group.getEditors(EditorsOrder.SEQUENTIAL).slice(index).find(editor => !editors.includes(editor));
+		if (!isWholeTabStack(group, editors) || opensEditorBetweenEditorsOfDroppedEditors(editorsOfDroppedEditors)) {
+			group.removeEditorsFromTabStack(editors);
+		} else if (group instanceof EditorGroupView) {
+
+			// Moving the editors of a tab stack one at a time would take them out of it
+			const otherEditors = group.getEditors(EditorsOrder.SEQUENTIAL).filter(editor => !editors.includes(editor));
+			group.moveEditorsWithinGroup(editors, editorAfter ? otherEditors.indexOf(editorAfter) : otherEditors.length);
+		}
+
+		// Leaving a tab stack moves an editor out through its nearer edge, which can move it past the drop
+		return editorAfter ? group.getIndexOfEditor(editorAfter) : group.count;
 	}
 
 	dispose(): void { }

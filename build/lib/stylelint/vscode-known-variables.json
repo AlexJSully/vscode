@@ -1088,6 +1088,7 @@
 		"--tab-sizing-fixed-max-width",
 		"--tab-stack-color",
 		"--tab-stack-foreground",
+		"--drop-target-tab-stack-color",
 		"--editor-group-tab-height",
 		"--editor-group-tabs-height",
 		"--testMessageDecorationFontFamily",

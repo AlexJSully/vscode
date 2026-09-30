@@ -5,7 +5,7 @@
 
 import { GroupIdentifier, IWorkbenchEditorConfiguration, IEditorIdentifier, IEditorCloseEvent, IEditorPartOptions, IEditorPartOptionsChangeEvent, SideBySideEditor, EditorCloseContext, IEditorPane, IEditorPartLimitOptions, IEditorPartDecorationOptions, IEditorWillOpenEvent, EditorInputWithOptions } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
-import { TabStackId } from '../../../common/editor/editorGroupModel.js';
+import { IReadonlyEditorGroupModel, TabStackId } from '../../../common/editor/editorGroupModel.js';
 import { MenuId } from '../../../../platform/actions/common/actions.js';
 import { IEditorGroup, GroupDirection, IMergeGroupOptions, GroupsOrder, GroupsArrangement, IAuxiliaryEditorPart, IEditorPart, IModalEditorPart, GroupActivationReason } from '../../../services/editor/common/editorGroupsService.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';
@@ -22,6 +22,7 @@ import { BooleanVerifier, EnumVerifier, NumberVerifier, ObjectVerifier, SetVerif
 import { IAuxiliaryWindowOpenOptions } from '../../../services/auxiliaryWindow/browser/auxiliaryWindowService.js';
 import { ContextKeyValue, IContextKey, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { coalesce } from '../../../../base/common/arrays.js';
+import { findLastIdx } from '../../../../base/common/arraysFind.js';
 
 export interface IEditorPartCreationOptions {
 	readonly restorePreviousState: boolean;
@@ -418,6 +419,31 @@ export function getIndexPastTabStack(group: IEditorGroup, index: number): number
 	}
 
 	return group.getIndexOfEditor(tabStack.editors[tabStack.editors.length - 1]) + 1;
+}
+
+/**
+ * Returns whether the editors are all of the editors of one tab stack, which a
+ * drop of them moves as one.
+ */
+export function isWholeTabStack(group: Pick<IReadonlyEditorGroupModel, 'getTabStack'>, editors: readonly EditorInput[]): boolean {
+	const tabStack = editors.length > 0 ? group.getTabStack(editors[0]) : undefined;
+
+	return tabStack?.editors.length === editors.length && editors.every(editor => group.getTabStack(editor)?.id === tabStack.id);
+}
+
+/**
+ * Returns whether the group opens an editor that it does not have yet, which
+ * opens outside of tab stacks, between the editors that it has already for
+ * dropped editors, which then leave their tab stack.
+ *
+ * @param editorsOfDroppedEditors the editor of the group for each dropped
+ * editor in drop order, if the group has it already.
+ */
+export function opensEditorBetweenEditorsOfDroppedEditors(editorsOfDroppedEditors: readonly (EditorInput | undefined)[]): boolean {
+	const firstIndex = editorsOfDroppedEditors.findIndex(editor => !!editor);
+	const lastIndex = findLastIdx(editorsOfDroppedEditors, editor => !!editor);
+
+	return editorsOfDroppedEditors.slice(firstIndex, lastIndex).includes(undefined);
 }
 
 /**

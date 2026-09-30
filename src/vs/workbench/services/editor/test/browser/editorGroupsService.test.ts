@@ -2467,15 +2467,17 @@ suite('EditorGroupsService', () => {
 	/**
 	 * Describes the tab bar of a group in order: each tab as the name of its
 	 * editor and each tab stack header as `H`, followed by `^` when its tab
-	 * stack is collapsed, with `_` where the drop feedback shows a drop and
-	 * `|` between the rows of pinned and other tabs.
+	 * stack is collapsed, with `=` where the drop feedback shows a drop inside
+	 * a tab stack, `_` where it shows any other drop, and `|` between the rows
+	 * of pinned and other tabs.
 	 */
 	function tabBar(group: IEditorGroupView): string {
 		return Array.from(group.element.querySelectorAll('.tabs-container'), tabsContainer => Array.from(tabsContainer.children).flatMap((child, index, children) => {
 			const slot = child.classList.contains('tab-stack-header') ? `H${child.classList.contains('collapsed') ? '^' : ''}` : child.getAttribute('data-resource-name');
 			const isDropBefore = child.classList.contains('drop-target-right') && !children[index - 1]?.classList.contains('drop-target-left');
+			const drop = child.classList.contains('drop-target-in-tab-stack') ? '=' : '_';
 
-			return [...(isDropBefore ? ['_'] : []), slot, ...(child.classList.contains('drop-target-left') ? ['_'] : [])];
+			return [...(isDropBefore ? [drop] : []), slot, ...(child.classList.contains('drop-target-left') ? [drop] : [])];
 		}).join(' ')).join(' | ');
 	}
 
@@ -2705,6 +2707,24 @@ suite('EditorGroupsService', () => {
 			italicBefore: true,
 			pinned: true,
 			italicAfter: false
+		});
+	});
+
+	test('tab stacks - adding a preview editor to a tab stack announces its tab as a member and no longer as a preview', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+		const ariaLabel = () => group.element.querySelector('.tab[data-resource-name="2"]')!.getAttribute('aria-label');
+
+		const [pinnedEditor, previewEditor] = createNamedTestEditors('1', '2');
+		await group.openEditor(pinnedEditor, { pinned: true });
+		await group.openEditor(previewEditor);
+		const before = ariaLabel();
+
+		group.updateTabStack(group.addEditorsToTabStack([previewEditor])!.id, { label: 'Auth' });
+
+		assert.deepStrictEqual({ before, after: ariaLabel() }, {
+			before: `${previewEditor.getAriaLabel()}, preview`,
+			after: `${previewEditor.getAriaLabel()}, in tab stack Auth`,
 		});
 	});
 
@@ -3098,12 +3118,10 @@ suite('EditorGroupsService', () => {
 	}
 
 	/**
-	 * Drags editors of a group the way its tabs do, and drops them near the
-	 * left or right edge of a tab, tab stack header or tabs container.
+	 * Starts a drag of editors of a group the way its tabs do.
 	 */
-	function dropEditors(sourceGroup: IEditorGroup, editors: readonly EditorInput[], target: HTMLElement, side: 'left' | 'right', init?: DragEventInit): void {
+	function dragEditors(sourceGroup: IEditorGroup, editors: readonly EditorInput[]): void {
 		LocalSelectionTransfer.getInstance<DraggedEditorIdentifier>().setData(editors.map(editor => new DraggedEditorIdentifier({ editor, groupId: sourceGroup.id })), DraggedEditorIdentifier.prototype);
-		dispatchDrags(target, [EventType.DRAG_ENTER, EventType.DRAG_OVER, EventType.DROP], side, init);
 	}
 
 	/**
@@ -3124,7 +3142,8 @@ suite('EditorGroupsService', () => {
 
 	/**
 	 * Drops as the row says on the tabs of a new shown editor part, and
-	 * describes the drop and the group afterwards.
+	 * describes the drop, the drop feedback right before it, and the group
+	 * afterwards.
 	 */
 	async function dropEditorsOnFixture([fixture, dragged, target, side, sourceFixture]: EditorsDropRow, editorConfiguration?: object, init?: DragEventInit): Promise<string> {
 		const [part] = await createShownPart(editorConfiguration);
@@ -3135,9 +3154,13 @@ suite('EditorGroupsService', () => {
 			await openFixture(sourceGroup, sourceFixture);
 		}
 
-		dropEditors(sourceGroup ?? group, dragged.split(' ').map(name => editorOf(sourceGroup ?? group, name)), dropTargetOf(group, target), side, init);
+		dragEditors(sourceGroup ?? group, dragged.split(' ').map(name => editorOf(sourceGroup ?? group, name)));
+		const dropTarget = dropTargetOf(group, target);
+		dispatchDrags(dropTarget, [EventType.DRAG_ENTER, EventType.DRAG_OVER], side, init);
+		const dropFeedback = tabBar(group);
+		dispatchDrags(dropTarget, [EventType.DROP], side, init);
 
-		return `${dragged} ${side} of ${target || 'the tabs'}: ${describeDrop(group, sourceGroup)}`;
+		return `${dragged} ${side} of ${target || 'the tabs'} [${dropFeedback}]: ${describeDrop(group, sourceGroup)}`;
 	}
 
 	/**
@@ -3159,7 +3182,7 @@ suite('EditorGroupsService', () => {
 		return `H0 ${side} of ${target || 'the tabs'}: ${describeDrop(group)}`;
 	}
 
-	test('tab stacks - tabs dropped in their group join a tab stack between its tabs and on its start slot, stay in it at its end only when all are in it, and are otherwise outside of it', async () => {
+	test('tab stacks - tabs dropped in their group land where the drop feedback shows: in a tab stack between its tabs, on its start slot and over the right half of its last tab, also a tab dropped on itself, and outside of it over the left half of the tab or header after it and otherwise', async () => {
 		const drops = [];
 		for (const [dragged, target, side] of [
 			['5', '3', 'left'],
@@ -3171,30 +3194,37 @@ suite('EditorGroupsService', () => {
 			['1', 'H1', 'right'],
 			['3', '4', 'right'],
 			['3', '5', 'left'],
+			['4', '5', 'left'],
 			['3 5', '4', 'right'],
 			['1', '7', 'right'],
 			['1', '', 'left'],
 		] as const) {
 			drops.push(await dropEditorsOnFixture(['1 2a 3a 4a 5 6b^ 7', dragged, target, side]));
 		}
+		for (const [dragged, target, side] of [['3', 'H1', 'left'], ['3', '3', 'right']] as const) {
+			drops.push(await dropEditorsOnFixture(['1 2a 3a 4b 5b', dragged, target, side]));
+		}
 
 		assert.deepStrictEqual(drops, [
-			'5 left of 3: 1 2a 5a 3a 4a 6b^ 7* [1 H 2 5 3 4 H^ 7]',
-			'5 right of H0: 1 5a 2a 3a 4a 6b^ 7* [1 H 5 2 3 4 H^ 7]',
-			'5 left of 2: 1 5a 2a 3a 4a 6b^ 7* [1 H 5 2 3 4 H^ 7]',
-			'5 left of H0: 1 5 2a 3a 4a 6b^ 7* [1 5 H 2 3 4 H^ 7]',
-			'1 left of 4: 2a 3a 1a 4a 5 6b^ 7* [H 2 3 1 4 5 H^ 7]',
-			'1 right of 4: 2a 3a 4a 1 5 6b^ 7* [H 2 3 4 1 5 H^ 7]',
-			'1 right of H1: 2a 3a 4a 5 6b^ 1 7* [H 2 3 4 5 H^ 1 7]',
-			'3 right of 4: 1 2a 4a 3a 5 6b^ 7* [1 H 2 4 3 5 H^ 7]',
-			'3 left of 5: 1 2a 4a 3a 5 6b^ 7* [1 H 2 4 3 5 H^ 7]',
-			'3 5 right of 4: 1 2a 4a 3 5 6b^ 7* [1 H 2 4 3 5 H^ 7]',
-			'1 right of 7: 2a 3a 4a 5 6b^ 7* 1 [H 2 3 4 5 H^ 7 1]',
-			'1 left of the tabs: 2a 3a 4a 5 6b^ 7* 1 [H 2 3 4 5 H^ 7 1]',
+			'5 left of 3 [1 H 2 = 3 4 5 H^ 7]: 1 2a 5a 3a 4a 6b^ 7* [1 H 2 5 3 4 H^ 7]',
+			'5 right of H0 [1 H = 2 3 4 5 H^ 7]: 1 5a 2a 3a 4a 6b^ 7* [1 H 5 2 3 4 H^ 7]',
+			'5 left of 2 [1 H = 2 3 4 5 H^ 7]: 1 5a 2a 3a 4a 6b^ 7* [1 H 5 2 3 4 H^ 7]',
+			'5 left of H0 [1 _ H 2 3 4 5 H^ 7]: 1 5 2a 3a 4a 6b^ 7* [1 5 H 2 3 4 H^ 7]',
+			'1 left of 4 [1 H 2 3 = 4 5 H^ 7]: 2a 3a 1a 4a 5 6b^ 7* [H 2 3 1 4 5 H^ 7]',
+			'1 right of 4 [1 H 2 3 4 = 5 H^ 7]: 2a 3a 4a 1a 5 6b^ 7* [H 2 3 4 1 5 H^ 7]',
+			'1 right of H1 [1 H 2 3 4 5 H^ _ 7]: 2a 3a 4a 5 6b^ 1 7* [H 2 3 4 5 H^ 1 7]',
+			'3 right of 4 [1 H 2 3 4 = 5 H^ 7]: 1 2a 4a 3a 5 6b^ 7* [1 H 2 4 3 5 H^ 7]',
+			'3 left of 5 [1 H 2 3 4 _ 5 H^ 7]: 1 2a 4a 3 5 6b^ 7* [1 H 2 4 3 5 H^ 7]',
+			'4 left of 5 [1 H 2 3 4 _ 5 H^ 7]: 1 2a 3a 4 5 6b^ 7* [1 H 2 3 4 5 H^ 7]',
+			'3 5 right of 4 [1 H 2 3 4 = 5 H^ 7]: 1 2a 4a 3a 5a 6b^ 7* [1 H 2 4 3 5 H^ 7]',
+			'1 right of 7 [1 H 2 3 4 5 H^ 7 _]: 2a 3a 4a 5 6b^ 7* 1 [H 2 3 4 5 H^ 7 1]',
+			'1 left of the tabs [1 H 2 3 4 5 H^ 7 _]: 2a 3a 4a 5 6b^ 7* 1 [H 2 3 4 5 H^ 7 1]',
+			'3 left of H1 [1 H 2 3 _ H 4 5]: 1 2a 3 4b 5b* [1 H 2 3 H 4 5]',
+			'3 right of 3 [1 H 2 3 = H 4 5]: 1 2a 3a 4b 5b* [1 H 2 3 H 4 5]',
 		]);
 	});
 
-	test('tab stacks - a whole tab stack, also one of a single editor, dropped in its group stays one wherever it lands outside of other tab stacks', async () => {
+	test('tab stacks - a whole tab stack, also one of a single editor, dropped in its group lands where the drop feedback shows, and stays one outside of other tab stacks and joins another one inside of it', async () => {
 		const drops = [];
 		for (const row of [
 			['1 2a 3a 4', '2 3', 'H0', 'left'],
@@ -3209,21 +3239,22 @@ suite('EditorGroupsService', () => {
 		}
 
 		assert.deepStrictEqual(drops, [
-			'2 3 left of H0: 1 2a 3a 4* [1 H 2 3 4]',
-			'2 3 left of 1: 2a 3a 1 4* [H 2 3 1 4]',
-			'2 3 left of the tabs: 1 4a 5a* 2b 3b [1 H 4 5 H 2 3]',
-			'2 3 right of 5: 1 4a 5a* 2b 3b [1 H 4 5 H 2 3]',
-			'2 3 left of 5: 1 4a 2a 3a 5a* [1 H 4 2 3 5]',
-			'2 3 right of H1: 1 4a^ 2b 3b 5* [1 H^ H 2 3 5]',
-			'2 left of H1: 1 3 2a 4b* [1 3 H 2 H 4]',
+			'2 3 left of H0 [1 _ H 2 3 4]: 1 2a 3a 4* [1 H 2 3 4]',
+			'2 3 left of 1 [_ 1 H 2 3 4]: 2a 3a 1 4* [H 2 3 1 4]',
+			'2 3 left of the tabs [1 H 2 3 H 4 5 _]: 1 4a 5a* 2b 3b [1 H 4 5 H 2 3]',
+			'2 3 right of 5 [1 H 2 3 H 4 5 =]: 1 4a 5a* 2a 3a [1 H 4 5 2 3]',
+			'2 3 left of 5 [1 H 2 3 H 4 = 5]: 1 4a 2a 3a 5a* [1 H 4 2 3 5]',
+			'2 3 right of H1 [1 H 2 3 H^ _ 5]: 1 4a^ 2b 3b 5* [1 H^ H 2 3 5]',
+			'2 left of H1 [1 H 2 3 _ H 4]: 1 3 2a 4b* [1 3 H 2 H 4]',
 		]);
 	});
 
-	test('tab stacks - pinned tabs dropped in a group with tab stacks are unpinned after the pinned tabs, where they move together with the other tabs the way unpinned tabs do, and pinned among them', async () => {
+	test('tab stacks - pinned tabs dropped in a group with tab stacks are unpinned past the slot right after the pinned tabs, also on the start slot of a tab stack there, where they move together with the other tabs the way unpinned tabs do, and stay pinned on that slot and among them', async () => {
 		const drops = [];
 		for (const row of [
 			['0s 1 2a 3a 4', '0', '4', 'left'],
 			['0s 1 2a 3a 4', '0', '3', 'left'],
+			['0s 1 2a 3a 4', '0', '3', 'right'],
 			['0s 1 2a 3a 4', '4', '0', 'left'],
 			['0s 1 2a 3a 4', '4', '0', 'right'],
 			['0s 1 2a 3a 4', '0', 'H0', 'right', '0'],
@@ -3233,6 +3264,8 @@ suite('EditorGroupsService', () => {
 			['1s 2a 3a', '3', 'H0', 'left'],
 			['1s 2a 3a', '1 3', 'H0', 'left'],
 			['1s 2a 3a 4', '1 4', 'H0', 'right'],
+			['1s 2a 3a', '1', 'H0', 'right'],
+			['1s 2a 3a', '1', '2', 'left'],
 		] as const) {
 			drops.push(await dropEditorsOnFixture(row));
 		}
@@ -3240,27 +3273,32 @@ suite('EditorGroupsService', () => {
 		drops.push(await dropEditorsOnFixture(['1s 2 3a 4a', '1 3', 'H0', 'left'], { pinnedTabsOnSeparateRow: true }));
 
 		assert.deepStrictEqual(drops, [
-			'0 left of 4: 1 2a 3a 0 4* [1 H 2 3 0 4]',
-			'0 left of 3: 1 2a 0a 3a 4* [1 H 2 0 3 4]',
-			'4 left of 0: 4s* 0s 1 2a 3a [4 0 1 H 2 3]',
-			'4 right of 0: 0s 4* 1 2a 3a [0 4 1 H 2 3]',
-			'0 right of H0: 1 0a* 2a 3a 4 [1 H 0 2 3 4], source: empty',
-			'1 3 left of H0: 2 1 3 4a* [2 1 3 H 4]',
-			'1 4 left of H0: 2 1 4* 3a [2 1 4 H 3]',
-			'1 2 left of 4: 3a 1a 2a 4a* [H 3 1 2 4]',
-			'3 left of H0: 1s 3* 2a [1 3 H 2]',
-			'1 3 left of H0: 1s 3* 2a [1 3 H 2]',
-			'1 4 right of H0: 1s 4a* 2a 3a [1 H 4 2 3]',
-			'1 right of 0: 0s 1s 2a 3a 4* [0 1 | H 2 3 4]',
-			'1 3 left of H0: 2 1 3 4a* [ | 2 1 3 H 4]',
+			'0 left of 4 [0 1 H 2 3 _ 4]: 1 2a 3a 0 4* [1 H 2 3 0 4]',
+			'0 left of 3 [0 1 H 2 = 3 4]: 1 2a 0a 3a 4* [1 H 2 0 3 4]',
+			'0 right of 3 [0 1 H 2 3 = 4]: 1 2a 3a 0a 4* [1 H 2 3 0 4]',
+			'4 left of 0 [_ 0 1 H 2 3 4]: 4s* 0s 1 2a 3a [4 0 1 H 2 3]',
+			'4 right of 0 [0 _ 1 H 2 3 4]: 0s 4* 1 2a 3a [0 4 1 H 2 3]',
+			'0 right of H0 [0 1 H = 2 3 4]: 1 0a* 2a 3a 4 [1 H 0 2 3 4], source: empty',
+			'1 3 left of H0 [1 2 _ H 3 4]: 2 1 3 4a* [2 1 3 H 4]',
+			'1 4 left of H0 [1 2 _ H 3 4]: 2 1 4* 3a [2 1 4 H 3]',
+			'1 2 left of 4 [1 2 H 3 = 4]: 3a 1a 2a 4a* [H 3 1 2 4]',
+			'3 left of H0 [1 _ H 2 3]: 1s 3* 2a [1 3 H 2]',
+			'1 3 left of H0 [1 _ H 2 3]: 1s 3* 2a [1 3 H 2]',
+			'1 4 right of H0 [1 H = 2 3 4]: 1a 4a* 2a 3a [H 1 4 2 3]',
+			'1 right of H0 [1 H = 2 3]: 1a 2a 3a* [H 1 2 3]',
+			'1 left of 2 [1 H = 2 3]: 1a 2a 3a* [H 1 2 3]',
+			'1 right of 0 [0 _ | 1 H 2 3 4]: 0s 1s 2a 3a 4* [0 1 | H 2 3 4]',
+			'1 3 left of H0 [1 | 2 _ H 3 4]: 2 1 3 4a* [ | 2 1 3 H 4]',
 		]);
 	});
 
-	test('tab stacks - tabs dropped on the empty space of the tabs after a tab stack stay in it only when all are in it and it is expanded', async () => {
+	test('tab stacks - tabs dropped on the empty space of the tabs after a tab stack land outside of it, also its own tabs, and those dropped over the right half of its last tab land in it', async () => {
 		const drops = [];
 		for (const row of [
 			['1 2 3a 4a', '3', '', 'left'],
+			['1 2 3a 4a', '3', '4', 'right'],
 			['1 2 3a 4a', '1', '', 'left'],
+			['1 2 3a 4a', '1', '4', 'right'],
 			['1 2 3a 4a', '1 3', '', 'left'],
 			['1 2 3a 4a', '5', '', 'left', '5'],
 			['1 2 3a^ 4a^', '1', '', 'left'],
@@ -3270,16 +3308,18 @@ suite('EditorGroupsService', () => {
 		}
 
 		assert.deepStrictEqual(drops, [
-			'3 left of the tabs: 1 2 4a* 3a [1 2 H 4 3]',
-			'1 left of the tabs: 2 3a 4a* 1 [2 H 3 4 1]',
-			'1 3 left of the tabs: 2 4a* 1 3 [2 H 4 1 3]',
-			'5 left of the tabs: 1 2 3a 4a 5* [1 2 H 3 4 5], source: empty',
-			'1 left of the tabs: 2* 3a^ 4a^ 1 [2 H^ 1]',
-			'5 left of the tabs: 1 2 3a^ 4a^ 5* [1 2 H^ 5], source: empty',
+			'3 left of the tabs [1 2 H 3 4 _]: 1 2 4a* 3 [1 2 H 4 3]',
+			'3 right of 4 [1 2 H 3 4 =]: 1 2 4a* 3a [1 2 H 4 3]',
+			'1 left of the tabs [1 2 H 3 4 _]: 2 3a 4a* 1 [2 H 3 4 1]',
+			'1 right of 4 [1 2 H 3 4 =]: 2 3a 4a* 1a [2 H 3 4 1]',
+			'1 3 left of the tabs [1 2 H 3 4 _]: 2 4a* 1 3 [2 H 4 1 3]',
+			'5 left of the tabs [1 2 H 3 4 _]: 1 2 3a 4a 5* [1 2 H 3 4 5], source: empty',
+			'1 left of the tabs [1 2 H^ _]: 2* 3a^ 4a^ 1 [2 H^ 1]',
+			'5 left of the tabs [1 2 H^ _]: 1 2 3a^ 4a^ 5* [1 2 H^ 5], source: empty',
 		]);
 	});
 
-	test('tab stacks - tabs dropped from another group join a tab stack between its tabs and on its start slot, also as a copy, and neither at its end nor after a collapsed tab stack', async () => {
+	test('tab stacks - tabs dropped from another group land where the drop feedback shows, also as a copy: in a tab stack between its tabs, on its start slot and over the right half of its last tab, and outside of it over the left half of the tab after it and after a collapsed tab stack', async () => {
 		const drops = [];
 		for (const [dragged, target, side] of [
 			['7', '3', 'left'],
@@ -3287,6 +3327,7 @@ suite('EditorGroupsService', () => {
 			['7', '2', 'left'],
 			['7', 'H0', 'left'],
 			['7', '3', 'right'],
+			['7', '4', 'left'],
 			['7', 'H1', 'right'],
 			['7 8', '3', 'left'],
 		] as const) {
@@ -3295,18 +3336,19 @@ suite('EditorGroupsService', () => {
 		drops.push(await dropEditorsOnFixture(['1 2a 3a 4 5b^ 6', '7', '3', 'left', '7 8'], undefined, { altKey: isMacintosh, ctrlKey: !isMacintosh }));
 
 		assert.deepStrictEqual(drops, [
-			'7 left of 3: 1 2a 7a* 3a 4 5b^ 6 [1 H 2 7 3 4 H^ 6], source: 8*',
-			'7 right of H0: 1 7a* 2a 3a 4 5b^ 6 [1 H 7 2 3 4 H^ 6], source: 8*',
-			'7 left of 2: 1 7a* 2a 3a 4 5b^ 6 [1 H 7 2 3 4 H^ 6], source: 8*',
-			'7 left of H0: 1 7* 2a 3a 4 5b^ 6 [1 7 H 2 3 4 H^ 6], source: 8*',
-			'7 right of 3: 1 2a 3a 7* 4 5b^ 6 [1 H 2 3 7 4 H^ 6], source: 8*',
-			'7 right of H1: 1 2a 3a 4 5b^ 7* 6 [1 H 2 3 4 H^ 7 6], source: 8*',
-			'7 8 left of 3: 1 2a 7a 8a* 3a 4 5b^ 6 [1 H 2 7 8 3 4 H^ 6], source: empty',
-			'7 left of 3: 1 2a 7a* 3a 4 5b^ 6 [1 H 2 7 3 4 H^ 6], source: 7 8*',
+			'7 left of 3 [1 H 2 = 3 4 H^ 6]: 1 2a 7a* 3a 4 5b^ 6 [1 H 2 7 3 4 H^ 6], source: 8*',
+			'7 right of H0 [1 H = 2 3 4 H^ 6]: 1 7a* 2a 3a 4 5b^ 6 [1 H 7 2 3 4 H^ 6], source: 8*',
+			'7 left of 2 [1 H = 2 3 4 H^ 6]: 1 7a* 2a 3a 4 5b^ 6 [1 H 7 2 3 4 H^ 6], source: 8*',
+			'7 left of H0 [1 _ H 2 3 4 H^ 6]: 1 7* 2a 3a 4 5b^ 6 [1 7 H 2 3 4 H^ 6], source: 8*',
+			'7 right of 3 [1 H 2 3 = 4 H^ 6]: 1 2a 3a 7a* 4 5b^ 6 [1 H 2 3 7 4 H^ 6], source: 8*',
+			'7 left of 4 [1 H 2 3 _ 4 H^ 6]: 1 2a 3a 7* 4 5b^ 6 [1 H 2 3 7 4 H^ 6], source: 8*',
+			'7 right of H1 [1 H 2 3 4 H^ _ 6]: 1 2a 3a 4 5b^ 7* 6 [1 H 2 3 4 H^ 7 6], source: 8*',
+			'7 8 left of 3 [1 H 2 = 3 4 H^ 6]: 1 2a 7a 8a* 3a 4 5b^ 6 [1 H 2 7 8 3 4 H^ 6], source: empty',
+			'7 left of 3 [1 H 2 = 3 4 H^ 6]: 1 2a 7a* 3a 4 5b^ 6 [1 H 2 7 3 4 H^ 6], source: 7 8*',
 		]);
 	});
 
-	test('tab stacks - an editor that the group has already, dropped from another group, lands where the drop feedback shows and joins a tab stack only between its tabs or on its start slot', async () => {
+	test('tab stacks - an editor that the group has already, dropped from another group, lands where the drop feedback shows and joins a tab stack only between its tabs, on its start slot or over the right half of its last tab', async () => {
 		const drops = [];
 		for (const row of [
 			['1 2a 3a 4b 5b', '1', 'H1', 'left', '1'],
@@ -3322,14 +3364,14 @@ suite('EditorGroupsService', () => {
 		}
 
 		assert.deepStrictEqual(drops, [
-			'1 left of H1: 2a 3a 1* 4b 5b [H 2 3 1 H 4 5], source: empty',
-			'1 right of 3: 2a 3a 1* 4b 5b [H 2 3 1 H 4 5], source: empty',
-			'1 left of 5: 2a 3a 4b 1b* 5b [H 2 3 H 4 1 5], source: empty',
-			'1 right of H0: 1a* 2a 3a 4b 5b [H 1 2 3 H 4 5], source: empty',
-			'1 left of H1: 2a 3a 1* 4b^ 5b^ [H 2 3 1 H^], source: empty',
-			'1 right of H1: 2a 3a 4b^ 5b^ 1* [H 2 3 H^ 1], source: empty',
-			'3 right of H0: 3a* 1a 2a [H 3 1 2], source: empty',
-			'1 left of H0: 1* 2a 3 [1 H 2 3], source: empty',
+			'1 left of H1 [1 H 2 3 _ H 4 5]: 2a 3a 1* 4b 5b [H 2 3 1 H 4 5], source: empty',
+			'1 right of 3 [1 H 2 3 = H 4 5]: 2a 3a 1a* 4b 5b [H 2 3 1 H 4 5], source: empty',
+			'1 left of 5 [1 H 2 3 H 4 = 5]: 2a 3a 4b 1b* 5b [H 2 3 H 4 1 5], source: empty',
+			'1 right of H0 [1 H = 2 3 H 4 5]: 1a* 2a 3a 4b 5b [H 1 2 3 H 4 5], source: empty',
+			'1 left of H1 [1 H 2 3 _ H^]: 2a 3a 1* 4b^ 5b^ [H 2 3 1 H^], source: empty',
+			'1 right of H1 [1 H 2 3 H^ _]: 2a 3a 4b^ 5b^ 1* [H 2 3 H^ 1], source: empty',
+			'3 right of H0 [H = 1 2 3]: 3a* 1a 2a [H 3 1 2], source: empty',
+			'1 left of H0 [_ H 1 2 3]: 1* 2a 3 [1 H 2 3], source: empty',
 		]);
 	});
 
@@ -3349,7 +3391,7 @@ suite('EditorGroupsService', () => {
 		]);
 	});
 
-	test('tab stacks - a single file dropped from the Explorer or as a tree item lands where the drop feedback shows and never joins another tab stack, and one that the group has already stays in its own only where a drop of its tab would', async () => {
+	test('tab stacks - a single file dropped from the Explorer or as a tree item lands where the drop feedback shows, which is outside of tab stacks, so one that the group has already leaves its own unless it is its only editor', async () => {
 		disposables.add(registerTestFileEditor());
 
 		const drops = [];
@@ -3365,6 +3407,11 @@ suite('EditorGroupsService', () => {
 			['1 2a^ 3a^ 4', '3', 'H0', 'left'],
 			['1 2 3a 4a', '3', 'H0', 'left'],
 			['1 2a 3a 4', '2', '3', 'right'],
+			['1 2a 3a 4', '2', '4', 'left'],
+			['1 2a 3a 4', '1', '3', 'right'],
+			['1 2a 3a 4a 5', '2', '4', 'left'],
+			['1 2a 3a', '2', '', 'left'],
+			['1 2a 3', '2', '', 'left'],
 			['1 2a^ 3a^ 4', '2', 'H0', 'right', 'treeItem'],
 		] as const) {
 			drops.push(await dropFileOnFixture(row));
@@ -3381,7 +3428,12 @@ suite('EditorGroupsService', () => {
 			'3 right of H0 [1 H^ _ 4]: 1 2a^ 3* 4 [1 H^ 3 4]',
 			'3 left of H0 [1 _ H^ 4]: 1 3* 2a^ 4 [1 3 H^ 4]',
 			'3 left of H0 [1 2 _ H 3 4]: 1 2 3* 4a [1 2 3 H 4]',
-			'2 right of 3 [1 H 2 3 _ 4]: 1 3a 2a* 4 [1 H 3 2 4]',
+			'2 right of 3 [1 H 2 3 _ 4]: 1 3a 2* 4 [1 H 3 2 4]',
+			'2 left of 4 [1 H 2 3 _ 4]: 1 3a 2* 4 [1 H 3 2 4]',
+			'1 right of 3 [1 H 2 3 _ 4]: 2a 3a 1* 4 [H 2 3 1 4]',
+			'2 left of 4 [1 H 2 3 4 _ 5]: 1 3a 4a 2* 5 [1 H 3 4 2 5]',
+			'2 left of the tabs [1 H 2 3 _]: 1 3a 2* [1 H 3 2]',
+			'2 left of the tabs [1 H 2 3 _]: 1 3 2a* [1 3 H 2]',
 			'2 as a tree item right of H0 [1 H^ _ 4]: 1 3a^ 2* 4 [1 H^ 2 4]',
 		]);
 	});
@@ -3414,7 +3466,26 @@ suite('EditorGroupsService', () => {
 		]);
 	});
 
-	test('tab stacks - files dropped from the Explorer land in drop order where the drop feedback shows, those that the group has already stay in their tab stack only where a drop of their tabs would and no file opens between them, and none joins another tab stack', async () => {
+	test('tab stacks - a file that the group has only in an editor of another kind, dropped from the Explorer, opens where the drop feedback shows and leaves that editor in place, also with tab stacks disabled', async () => {
+		disposables.add(registerTestFileEditor());
+
+		// The editor that reopening an editor with another editor replaces it with
+		const reopenFirstEditorWithOtherEditor = async (group: IEditorGroupView) => {
+			await group.replaceEditors([{ editor: editorOf(group, '1'), replacement: createTestFileEditorInput(URI.file('1'), 'otherKind') }]);
+		};
+
+		const drops = [
+			await dropFileOnFixture(['1 2a 3a 4', '1', '4', 'left'], undefined, reopenFirstEditorWithOtherEditor),
+			await dropFileOnFixture(['1 2 3 4', '1', '3', 'left'], { enableTabStacks: false }, reopenFirstEditorWithOtherEditor),
+		];
+
+		assert.deepStrictEqual(drops, [
+			'1 left of 4 [1 H 2 3 _ 4]: 1 2a 3a 1* 4 [1 H 2 3 1 4]',
+			'1 left of 3 [1 2 _ 3 4]: 1 2 1* 3 4 [1 2 1 3 4]',
+		]);
+	});
+
+	test('tab stacks - files dropped from the Explorer land in drop order where the drop feedback shows, which is outside of tab stacks, so those that the group has already leave their tab stack unless they are all of its editors and no file opens between them', async () => {
 		disposables.add(registerTestFileEditor());
 
 		const drops = [];
@@ -3445,7 +3516,7 @@ suite('EditorGroupsService', () => {
 			'3 4 left of H2 [1 H 2 3 H 4 5 _ H 6 7]: 1 2a 5b 3* 4 6c 7c [1 H 2 H 5 3 4 H 6 7]',
 			'2 3 right of H0 [1 H^ _ 5]: 1 4a^ 2* 3 5 [1 H^ 2 3 5]',
 			'2 3 right of H0 [1 H^ _ 4]: 1 2a* 3a 4 [1 H 2 3 4]',
-			'2 3 right of 4 [1 H 2 3 4 _ 5]: 1 4a 2a* 3a 5 [1 H 4 2 3 5]',
+			'2 3 right of 4 [1 H 2 3 4 _ 5]: 1 4a 2* 3 5 [1 H 4 2 3 5]',
 			'9 2 right of 3 [1 H 2 3 _ 4]: 1 3a 9* 2 4 [1 H 3 9 2 4]',
 			'4 3 2 left of 1 [_ 1 H 2 3 4 5]: 4a* 3a 2a 1 5 [H 4 3 2 1 5]',
 			'2 9 3 right of 4 [1 H 2 3 4 _ 5]: 1 4a 2* 9 3 5 [1 H 4 2 9 3 5]',
@@ -3463,6 +3534,8 @@ suite('EditorGroupsService', () => {
 			['1 2 3 4', '1', '3', 'right', 'treeItem'],
 			['1s 2s 3 4', '2', '3', 'right'],
 			['1s 2s 3 4', '2', '3', 'left'],
+			['1s 2s 3 4', '9 2', '3', 'left'],
+			['1s 2s 3 4', '1 2', '3', 'left'],
 			['1 2 3 4', '9 1', '3', 'right'],
 			['1 2 3 4 5', '3 2 1', '4', 'right'],
 		] as const) {
@@ -3475,6 +3548,8 @@ suite('EditorGroupsService', () => {
 			'1 as a tree item right of 3 [1 2 3 _ 4]: 2 3 1* 4 [2 3 1 4]',
 			'2 right of 3 [1 2 3 _ 4]: 1s 3 2* 4 [1 3 2 4]',
 			'2 left of 3 [1 2 _ 3 4]: 1s 2s* 3 4 [1 2 3 4]',
+			'9 2 left of 3 [1 2 _ 3 4]: 1s 9* 2 3 4 [1 9 2 3 4]',
+			'1 2 left of 3 [1 2 _ 3 4]: 1s* 2s 3 4 [1 2 3 4]',
 			'9 1 right of 3 [1 2 3 _ 4]: 2 3 9* 1 4 [2 3 9 1 4]',
 			'3 2 1 right of 4 [1 2 3 4 _ 5]: 4 3* 2 1 5 [4 3 2 1 5]',
 		]);
@@ -3501,7 +3576,7 @@ suite('EditorGroupsService', () => {
 		]);
 	});
 
-	test('tab stacks - pinned files that the group has already, dropped after the pinned tabs, are unpinned where the drop feedback shows and none joins another tab stack, and one dropped right after the pinned tabs stays pinned', async () => {
+	test('tab stacks - pinned files that the group has already, dropped after the pinned tabs, are unpinned where the drop feedback shows and none joins another tab stack, and those dropped right after the pinned tabs stay pinned unless they follow a file that is not pinned or that the group does not have yet in drop order', async () => {
 		disposables.add(registerTestFileEditor());
 
 		const drops = [];
@@ -3511,6 +3586,9 @@ suite('EditorGroupsService', () => {
 			['1s 2 3a 4a', '3 1', 'H0', 'left'],
 			['1s 2a 3a 4a', '3 9 1', '', 'left'],
 			['1s 2s 3 4a 5a', '1', '3', 'left'],
+			['1s 2s 3 4', '1 2', '3', 'left'],
+			['1s 2s 3 4', '9 2', '3', 'left'],
+			['1s 2s 3a 4a', '9 2', 'H0', 'left'],
 			['1s 2 3a 4a', '9 1', 'H0', 'left'],
 		] as const) {
 			drops.push(await dropFileOnFixture(row));
@@ -3522,6 +3600,9 @@ suite('EditorGroupsService', () => {
 			'3 1 left of H0 [1 2 _ H 3 4]: 2 3* 1 4a [2 3 1 H 4]',
 			'3 9 1 left of the tabs [1 H 2 3 4 _]: 2a 4a 3* 9 1 [H 2 4 3 9 1]',
 			'1 left of 3 [1 2 _ 3 H 4 5]: 2s 1s* 3 4a 5a [2 1 3 H 4 5]',
+			'1 2 left of 3 [1 2 _ 3 4]: 1s* 2s 3 4 [1 2 3 4]',
+			'9 2 left of 3 [1 2 _ 3 4]: 1s 9* 2 3 4 [1 9 2 3 4]',
+			'9 2 left of H0 [1 2 _ H 3 4]: 1s 9* 2 3a 4a [1 9 2 H 3 4]',
 			'9 1 left of H0 [1 2 _ H 3 4]: 2 9* 1 3a 4a [2 9 1 H 3 4]',
 		]);
 	});
@@ -3539,11 +3620,11 @@ suite('EditorGroupsService', () => {
 		}
 
 		assert.deepStrictEqual(drops, [
-			'1 right of 3: 2 3 1 4* [2 3 1 4]',
-			'2 4 left of 1: 2 4* 1 3 [2 4 1 3]',
-			'3 right of 4: 1 2 4* 3 [1 2 4 3]',
-			'1 left of the tabs: 2 3 4* 1 [2 3 4 1]',
-			'1 left of 4: 2 3 1* 4 [2 3 1 4], source: empty',
+			'1 right of 3 [1 2 3 _ 4]: 2 3 1 4* [2 3 1 4]',
+			'2 4 left of 1 [_ 1 2 3 4]: 2 4* 1 3 [2 4 1 3]',
+			'3 right of 4 [1 2 3 4 _]: 1 2 4* 3 [1 2 4 3]',
+			'1 left of the tabs [1 2 3 4 _]: 2 3 4* 1 [2 3 4 1]',
+			'1 left of 4 [1 2 3 _ 4]: 2 3 1* 4 [2 3 1 4], source: empty',
 		]);
 	});
 
