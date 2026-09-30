@@ -9,7 +9,8 @@ import { DragMouseEvent } from '../../base/browser/mouseEvent.js';
 import { IListDragAndDrop } from '../../base/browser/ui/list/list.js';
 import { ElementsDragAndDropData, ListViewTargetSector } from '../../base/browser/ui/list/listView.js';
 import { ITreeDragOverReaction } from '../../base/browser/ui/tree/tree.js';
-import { coalesce } from '../../base/common/arrays.js';
+import { coalesce, distinct } from '../../base/common/arrays.js';
+import { findLast } from '../../base/common/arraysFind.js';
 import { UriList, VSDataTransfer } from '../../base/common/dataTransfer.js';
 import { Emitter, Event } from '../../base/common/event.js';
 import { Disposable, DisposableStore, IDisposable, markAsSingleton } from '../../base/common/lifecycle.js';
@@ -28,13 +29,17 @@ import { Registry } from '../../platform/registry/common/platform.js';
 import { IWindowOpenable } from '../../platform/window/common/window.js';
 import { IWorkspaceContextService, hasWorkspaceFileExtension, isTemporaryWorkspace } from '../../platform/workspace/common/workspace.js';
 import { IWorkspaceFolderCreationData, IWorkspacesService } from '../../platform/workspaces/common/workspaces.js';
-import { EditorResourceAccessor, GroupIdentifier, IEditorIdentifier, isEditorIdentifier, isResourceDiffEditorInput, isResourceMergeEditorInput, isResourceSideBySideEditorInput } from '../common/editor.js';
+import { EditorResourceAccessor, EditorsOrder, GroupIdentifier, IEditorIdentifier, isEditorIdentifier, isResourceDiffEditorInput, isResourceMergeEditorInput, isResourceSideBySideEditorInput } from '../common/editor.js';
+import { DiffEditorInput } from '../common/editor/diffEditorInput.js';
+import { EditorInput } from '../common/editor/editorInput.js';
+import { SideBySideEditorInput } from '../common/editor/sideBySideEditorInput.js';
 import { IEditorGroup } from '../services/editor/common/editorGroupsService.js';
+import { IEditorResolverService } from '../services/editor/common/editorResolverService.js';
 import { IEditorService } from '../services/editor/common/editorService.js';
 import { IHostService } from '../services/host/browser/host.js';
 import { ITextFileService } from '../services/textfile/common/textfiles.js';
 import { IWorkspaceEditingService } from '../services/workspaces/common/workspaceEditing.js';
-import { IEditorOptions } from '../../platform/editor/common/editor.js';
+import { IEditorOptions, IResourceEditorInput } from '../../platform/editor/common/editor.js';
 import { mainWindow } from '../../base/browser/window.js';
 import { BroadcastDataChannel } from '../../base/browser/broadcast.js';
 
@@ -197,6 +202,86 @@ export class ResourcesDropHandler {
 
 		return true;
 	}
+}
+
+/**
+ * Returns the editor of the group that opening the dropped editor in the
+ * group opens again, the way the group finds it once the dropped editor is
+ * resolved. Only a diff editor matches a dropped diff editor. Any other
+ * dropped editor opens in the editor that its override names, or else in the
+ * default editor of its resource, so it matches the first editor of that
+ * kind for its resource, or else the last side by side editor, such as one
+ * split in its group, that shows such an editor on both sides.
+ */
+export function findEditorOfDroppedEditor(group: IEditorGroup, droppedEditor: IDraggedResourceEditorInput, editorResolverService: IEditorResolverService): EditorInput | undefined {
+	const editors = group.getEditors(EditorsOrder.SEQUENTIAL);
+	if (isResourceDiffEditorInput(droppedEditor)) {
+		return editors.find(editor => editor instanceof DiffEditorInput && editor.matches(droppedEditor));
+	}
+
+	if (!droppedEditor.resource) {
+		return undefined;
+	}
+
+	const override = typeof droppedEditor.options?.override === 'string' ? droppedEditor.options.override : editorResolverService.getEditorMatches(droppedEditor.resource).defaultRule.editor.id;
+	const resolvedEditor: IResourceEditorInput = { resource: droppedEditor.resource, options: { override } };
+
+	return editors.find(editor => editor.matches(resolvedEditor))
+		?? findLast(editors, editor => editor instanceof SideBySideEditorInput && editor.primary.matches(resolvedEditor) && editor.secondary.matches(resolvedEditor));
+}
+
+/**
+ * Moves the editors of the group that opening the dropped editors opens
+ * again next to each other, in drop order, before the first other editor at
+ * or after the index, counted before anything moves. Returns the index to
+ * open the dropped editors at: the group opens the first of them at that
+ * index and each other one right after the one before it, so the moved
+ * editors stay in place and the editors that the group does not have yet
+ * open between them in drop order. The group moves the editor of the first
+ * dropped editor itself when it opens it at that index. At or past the end of
+ * the sticky editors, a sticky editor that follows, in drop order, a dropped
+ * editor that the group does not have yet or that is not sticky is unstuck.
+ *
+ * @param sticky whether the moved editors become sticky, as the dropped
+ * editors open.
+ */
+export function moveEditorsOfDroppedEditors(group: IEditorGroup, droppedEditors: readonly IDraggedResourceEditorInput[], index: number, editorResolverService: IEditorResolverService, sticky?: boolean): number {
+	const editorsOfDroppedEditors = droppedEditors.map(droppedEditor => findEditorOfDroppedEditor(group, droppedEditor, editorResolverService));
+	const editors = distinct(coalesce(editorsOfDroppedEditors));
+	if (editors.length === 0) {
+		return index;
+	}
+
+	const editorAfter = group.getEditors(EditorsOrder.SEQUENTIAL).slice(index).find(editor => !editors.includes(editor));
+
+	// The index that moving an editor of the group to right before another one, or to the end without one, moves it to
+	const getIndexToMoveBefore = (editor: EditorInput, nextEditor: EditorInput | undefined) => {
+		const nextIndex = nextEditor ? group.getIndexOfEditor(nextEditor) : group.count;
+
+		return group.getIndexOfEditor(editor) < nextIndex ? nextIndex - 1 : nextIndex;
+	};
+
+	// The group moves the editor of the first dropped editor when it opens it, so only the others move here
+	const firstEditor = editorsOfDroppedEditors[0];
+	const laterEditors = firstEditor ? editors.slice(1) : editors;
+
+	// At or past the end of the sticky editors, the dropped editors stay sticky only up to the first one that the
+	// group does not have yet or that is not sticky, and those after it are unstuck, as a drop of their tabs
+	// unsticks them, so that no editor that opens between them lands among the sticky editors and sticks
+	const firstUnstickyIndex = editorsOfDroppedEditors.findIndex(editor => !editor || !group.isSticky(editor));
+	if (!sticky && index >= group.stickyCount && firstUnstickyIndex >= 0) {
+		for (const editor of laterEditors) {
+			if (editorsOfDroppedEditors.indexOf(editor) > firstUnstickyIndex) {
+				group.unstickEditor(editor);
+			}
+		}
+	}
+
+	for (const editor of laterEditors) {
+		group.moveEditor(editor, group, { index: getIndexToMoveBefore(editor, editorAfter), sticky });
+	}
+
+	return firstEditor ? getIndexToMoveBefore(firstEditor, laterEditors.at(0) ?? editorAfter) : group.getIndexOfEditor(laterEditors[0]);
 }
 
 export function fillEditorsDragData(accessor: ServicesAccessor, resources: URI[], event: DragMouseEvent | DragEvent, options?: { disableStandardTransfer: boolean }): void;

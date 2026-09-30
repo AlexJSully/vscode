@@ -13,7 +13,7 @@ import { IDimension } from '../../../../editor/common/core/2d/dimension.js';
 import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { ContextKeyValue, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { URI } from '../../../../base/common/uri.js';
-import { IGroupModelChangeEvent } from '../../../common/editor/editorGroupModel.js';
+import { IGroupModelChangeEvent, ITabStack, ITabStackUpdate, TabStackId } from '../../../common/editor/editorGroupModel.js';
 import { IRectangle } from '../../../../platform/window/common/window.js';
 import { IMenuChangeEvent, MenuId } from '../../../../platform/actions/common/actions.js';
 import { DeepPartial } from '../../../../base/common/types.js';
@@ -1062,6 +1062,53 @@ export interface IEditorGroup {
 	 * if unspecified.
 	 */
 	unstickEditor(editor?: EditorInput): void;
+
+	/**
+	 * The tab stacks of the group in the order of their first editor. A tab
+	 * stack is a colored, optionally named run of adjacent editors that can be
+	 * collapsed to hide them. There are none while
+	 * `workbench.editor.enableTabStacks` is off.
+	 */
+	readonly tabStacks: readonly ITabStack[];
+
+	/**
+	 * Returns the tab stack the editor belongs to, or `undefined` when it
+	 * belongs to none.
+	 */
+	getTabStack(editor: EditorInput): ITabStack | undefined;
+
+	/**
+	 * Adds editors to a tab stack. Sticky editors are skipped, preview editors
+	 * are pinned, and editors hidden by joining a collapsed tab stack leave the
+	 * selection.
+	 *
+	 * @param editors the editors to add, which move next to each other.
+	 * @param tabStack the tab stack to add the editors to, or `undefined` to
+	 * create a new tab stack with no name, gathered at the first of the editors,
+	 * or after the tab stack that editor is in.
+	 *
+	 * @returns the tab stack the editors were added to, or `undefined` when
+	 * `workbench.editor.enableTabStacks` is off, the tab stack does not exist or
+	 * no editor was added to a new tab stack.
+	 */
+	addEditorsToTabStack(editors: readonly EditorInput[], tabStack?: TabStackId): ITabStack | undefined;
+
+	/**
+	 * Removes editors from their tab stacks. Each editor moves out through the
+	 * nearer edge of its tab stack, and a tab stack that loses all of its
+	 * editors is deleted while the editors stay open.
+	 */
+	removeEditorsFromTabStack(editors: readonly EditorInput[]): void;
+
+	/**
+	 * Changes the name, color or collapsed state of a tab stack. Collapsing the
+	 * tab stack of the active editor first opens the nearest editor outside of
+	 * it that is not hidden in another collapsed tab stack, looking right first
+	 * and then left. Without such an editor the tab stack stays expanded, while
+	 * a name or color in the same update still applies. Collapsing also removes
+	 * the editors of the tab stack from the selection.
+	 */
+	updateTabStack(tabStack: TabStackId, update: ITabStackUpdate): void;
 
 	/**
 	 * Whether this editor group should be locked or not.

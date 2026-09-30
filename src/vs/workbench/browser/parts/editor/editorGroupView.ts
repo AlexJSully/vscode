@@ -4,9 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import './media/editorgroupview.css';
-import { EditorGroupModel, IEditorOpenOptions, IGroupModelChangeEvent, ISerializedEditorGroupModel, isGroupEditorCloseEvent, isGroupEditorOpenEvent, isSerializedEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
+import { EditorGroupModel, IEditorOpenOptions, IGroupModelChangeEvent, ISerializedEditorGroupModel, isGroupEditorCloseEvent, isGroupEditorOpenEvent, isSerializedEditorGroupModel, ITabStack, ITabStackOperationResult, ITabStackUpdate, TabStackId } from '../../../common/editor/editorGroupModel.js';
 import { GroupIdentifier, CloseDirection, IEditorCloseEvent, IEditorPane, SaveReason, IEditorPartOptionsChangeEvent, EditorsOrder, IVisibleEditorPane, EditorResourceAccessor, EditorInputCapabilities, IUntypedEditorInput, DEFAULT_EDITOR_ASSOCIATION, SideBySideEditor, EditorCloseContext, IEditorWillMoveEvent, IEditorWillOpenEvent, IMatchEditorOptions, GroupModelChangeKind, IActiveEditorChangeEvent, IFindEditorOptions, TEXT_DIFF_EDITOR_ID } from '../../../common/editor.js';
-import { ActiveEditorGroupLockedContext, ActiveEditorDirtyContext, EditorGroupEditorsCountContext, ActiveEditorStickyContext, ActiveEditorPinnedContext, ActiveEditorLastInGroupContext, ActiveEditorFirstInGroupContext, ResourceContextKey, applyAvailableEditorIds, ActiveEditorAvailableEditorIdsContext, ActiveEditorCanSplitInGroupContext, SideBySideEditorActiveContext, TextCompareEditorVisibleContext, TextCompareEditorActiveContext, ActiveEditorContext, ActiveEditorReadonlyContext, ActiveEditorCanRevertContext, ActiveEditorCanToggleReadonlyContext, ActiveCompareEditorCanSwapContext, MultipleEditorsSelectedInGroupContext, TwoEditorsSelectedInGroupContext, SelectedEditorsInGroupFileOrUntitledResourceContextKey, ActiveEditorCannotCloseContext } from '../../../common/contextkeys.js';
+import { ActiveEditorGroupLockedContext, ActiveEditorDirtyContext, EditorGroupEditorsCountContext, ActiveEditorStickyContext, ActiveEditorPinnedContext, ActiveEditorLastInGroupContext, ActiveEditorFirstInGroupContext, ResourceContextKey, applyAvailableEditorIds, ActiveEditorAvailableEditorIdsContext, ActiveEditorCanSplitInGroupContext, SideBySideEditorActiveContext, TextCompareEditorVisibleContext, TextCompareEditorActiveContext, ActiveEditorContext, ActiveEditorReadonlyContext, ActiveEditorCanRevertContext, ActiveEditorCanToggleReadonlyContext, ActiveCompareEditorCanSwapContext, MultipleEditorsSelectedInGroupContext, TwoEditorsSelectedInGroupContext, SelectedEditorsInGroupFileOrUntitledResourceContextKey, ActiveEditorCannotCloseContext, ActiveEditorInTabStackContext, EditorGroupHasTabStacksContext } from '../../../common/contextkeys.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { SideBySideEditorInput } from '../../../common/editor/sideBySideEditorInput.js';
 import { Emitter, Event, Relay } from '../../../../base/common/event.js';
@@ -28,7 +28,7 @@ import { DisposableStore, MutableDisposable, toDisposable } from '../../../../ba
 import { ITelemetryData, ITelemetryService } from '../../../../platform/telemetry/common/telemetry.js';
 import { DeferredPromise, Promises, RunOnceWorker } from '../../../../base/common/async.js';
 import { EventType as TouchEventType, GestureEvent } from '../../../../base/browser/touch.js';
-import { IEditorGroupsView, IEditorGroupView, fillActiveEditorViewState, EditorServiceImpl, IEditorGroupTitleHeight, IInternalEditorOpenOptions, IInternalMoveCopyOptions, IInternalEditorCloseOptions, IInternalEditorTitleControlOptions, IEditorPartsView, IEditorGroupViewOptions } from './editor.js';
+import { IEditorGroupsView, IEditorGroupView, fillActiveEditorViewState, EditorServiceImpl, IEditorGroupTitleHeight, IInternalEditorOpenOptions, IInternalMoveCopyOptions, IInternalEditorCloseOptions, IEditorPartsView, IEditorGroupViewOptions, getIndexPastTabStack, TabStackEditorFocus } from './editor.js';
 import { ActionBar } from '../../../../base/browser/ui/actionbar/actionbar.js';
 import { IKeybindingService } from '../../../../platform/keybinding/common/keybinding.js';
 import { Separator, SubmenuAction } from '../../../../base/common/actions.js';
@@ -266,12 +266,14 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		const groupActiveEditorFirstContext = this.editorPartsView.bind(ActiveEditorFirstInGroupContext, this);
 		const groupActiveEditorLastContext = this.editorPartsView.bind(ActiveEditorLastInGroupContext, this);
 		const groupActiveEditorStickyContext = this.editorPartsView.bind(ActiveEditorStickyContext, this);
+		const groupActiveEditorInTabStackContext = this.editorPartsView.bind(ActiveEditorInTabStackContext, this);
 		const groupEditorsCountContext = this.editorPartsView.bind(EditorGroupEditorsCountContext, this);
 		const groupLockedContext = this.editorPartsView.bind(ActiveEditorGroupLockedContext, this);
 
 		const multipleEditorsSelectedContext = MultipleEditorsSelectedInGroupContext.bindTo(this.scopedContextKeyService);
 		const twoEditorsSelectedContext = TwoEditorsSelectedInGroupContext.bindTo(this.scopedContextKeyService);
 		const selectedEditorsHaveFileOrUntitledResourceContext = SelectedEditorsInGroupFileOrUntitledResourceContextKey.bindTo(this.scopedContextKeyService);
+		const groupHasTabStacksContext = EditorGroupHasTabStacksContext.bindTo(this.scopedContextKeyService);
 
 		const groupActiveEditorContext = this.editorPartsView.bind(ActiveEditorContext, this);
 		const groupActiveEditorIsReadonly = this.editorPartsView.bind(ActiveEditorReadonlyContext, this);
@@ -338,6 +340,10 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 			});
 		};
 
+		const updateActiveEditorInTabStackContext = () => {
+			groupActiveEditorInTabStackContext.set(this.model.activeEditor ? !!this.model.getTabStack(this.model.activeEditor) : false);
+		};
+
 		// Update group contexts based on group changes
 		const updateGroupContextKeys = (e: IGroupModelChangeEvent) => {
 			switch (e.kind) {
@@ -349,6 +355,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 					groupActiveEditorLastContext.set(this.model.isLast(this.model.activeEditor));
 					groupActiveEditorPinnedContext.set(this.model.activeEditor ? this.model.isPinned(this.model.activeEditor) : false);
 					groupActiveEditorStickyContext.set(this.model.activeEditor ? this.model.isSticky(this.model.activeEditor) : false);
+					updateActiveEditorInTabStackContext();
 					break;
 				case GroupModelChangeKind.EDITOR_CLOSE:
 					groupActiveEditorPinnedContext.set(this.model.activeEditor ? this.model.isPinned(this.model.activeEditor) : false);
@@ -379,6 +386,10 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 					twoEditorsSelectedContext.set(this.model.selectedEditors.length === 2);
 					selectedEditorsHaveFileOrUntitledResourceContext.set(this.model.selectedEditors.every(e => e.resource && (this.fileService.hasProvider(e.resource) || e.resource.scheme === Schemas.untitled)));
 					break;
+				case GroupModelChangeKind.TAB_STACKS:
+					groupHasTabStacksContext.set(this.model.tabStacks.length > 0);
+					updateActiveEditorInTabStackContext();
+					break;
 			}
 
 			// Group editors count context
@@ -395,6 +406,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		observeActiveEditor();
 		updateGroupContextKeys({ kind: GroupModelChangeKind.EDITOR_ACTIVE });
 		updateGroupContextKeys({ kind: GroupModelChangeKind.GROUP_LOCKED });
+		updateGroupContextKeys({ kind: GroupModelChangeKind.TAB_STACKS });
 	}
 
 	private registerContainerListeners(): void {
@@ -631,6 +643,9 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 				break;
 			case GroupModelChangeKind.EDITORS_SELECTION:
 				this.onDidChangeEditorSelection();
+				break;
+			case GroupModelChangeKind.TAB_STACKS:
+				this.titleControl.updateTabStacks();
 				break;
 		}
 
@@ -1174,6 +1189,87 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 
 	//#endregion
 
+	//#region Tab Stacks
+
+	get tabStacks(): readonly ITabStack[] {
+		return this.model.tabStacks;
+	}
+
+	getTabStack(editor: EditorInput): ITabStack | undefined {
+		return this.model.getTabStack(editor);
+	}
+
+	addEditorsToTabStack(editors: readonly EditorInput[], tabStack?: TabStackId): ITabStack | undefined {
+		const result = this.model.addEditorsToTabStack(editors, tabStack);
+		this.updateTitleControlAfterTabStackOperation(result);
+
+		return result.tabStack;
+	}
+
+	removeEditorsFromTabStack(editors: readonly EditorInput[]): void {
+		this.updateTitleControlAfterTabStackOperation(this.model.removeEditorsFromTabStack(editors));
+	}
+
+	updateTabStack(tabStack: TabStackId, update: ITabStackUpdate): void {
+		const activeEditor = this.model.activeEditor;
+
+		this.model.updateTabStack(tabStack, update);
+
+		// Collapsing the tab stack of the active editor makes another editor
+		// active in the model, which the editor pane then has to show
+		const nextActiveEditor = this.model.activeEditor;
+		if (nextActiveEditor && nextActiveEditor !== activeEditor) {
+			const preserveFocus = this.groupsView.activeGroup !== this;
+			this.doOpenEditor(nextActiveEditor, {
+				preserveFocus,
+				// Keep the sizes of an inactive group that may be minimized
+				activation: preserveFocus ? EditorActivation.PRESERVE : undefined
+			}, {
+				preserveWindowOrder: true,
+				inactiveSelection: this.model.selectedEditors.filter(editor => editor !== nextActiveEditor)
+			});
+		}
+
+		this.titleControl.updateTabStacks();
+	}
+
+	moveTabStack(tabStack: TabStackId, index: number): void {
+		this.updateTitleControlAfterTabStackOperation(this.model.moveTabStack(tabStack, index));
+	}
+
+	moveEditorsWithinGroup(editors: readonly EditorInput[], index: number, targetTabStack?: TabStackId | null): void {
+		const result = this.model.moveEditorsWithinGroup(editors, index, targetTabStack);
+		this.updateTitleControlAfterTabStackOperation(result);
+
+		// Moved editors are pinned, the same as an editor moved on its own
+		for (const { editor } of result.moves) {
+			this.pinEditor(editor);
+		}
+	}
+
+	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean {
+		return this.titleControl.editTabStack(tabStack, focus);
+	}
+
+	/**
+	 * Replays the moves of a tab stack operation on the title control in the
+	 * order they happened, as moves that keep the sticky state of the editor,
+	 * then shows the editors it pinned as pinned and the tab stacks as they are.
+	 */
+	private updateTitleControlAfterTabStackOperation({ moves, pinned }: ITabStackOperationResult): void {
+		for (const { editor, from, to } of moves) {
+			this.titleControl.moveEditor(editor, from, to, false);
+		}
+
+		for (const editor of pinned) {
+			this.titleControl.pinEditor(editor);
+		}
+
+		this.titleControl.updateTabStacks();
+	}
+
+	//#endregion
+
 	//#region openEditor()
 
 	async openEditor(editor: EditorInput, options?: IEditorOptions, internalOptions?: IInternalEditorOpenOptions): Promise<IEditorPane | undefined> {
@@ -1213,7 +1309,8 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 			transient: !!options?.transient,
 			inactiveSelection: internalOptions?.inactiveSelection,
 			active: this.count === 0 || !options?.inactive,
-			supportSideBySide: internalOptions?.supportSideBySide
+			supportSideBySide: internalOptions?.supportSideBySide,
+			tabStack: internalOptions?.tabStack ?? undefined
 		};
 
 		if (!openEditorOptions.active && !openEditorOptions.pinned && this.model.activeEditor && !this.model.isPinned(this.model.activeEditor)) {
@@ -1246,12 +1343,13 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		}
 
 		// Actually move the editor if a specific index is provided and we figure
-		// out that the editor is already opened at a different index. This
-		// ensures the right set of events are fired to the outside.
+		// out that the editor is already opened at a different index, or a tab
+		// stack hint decides its tab stack. This ensures the right set of events
+		// are fired to the outside.
 		if (typeof openEditorOptions.index === 'number') {
 			const indexOfEditor = this.model.indexOf(editor);
-			if (indexOfEditor !== -1 && indexOfEditor !== openEditorOptions.index) {
-				this.doMoveEditorInsideGroup(editor, openEditorOptions);
+			if (indexOfEditor !== -1 && (indexOfEditor !== openEditorOptions.index || internalOptions?.tabStack !== undefined)) {
+				this.doMoveEditorInsideGroup(editor, openEditorOptions, internalOptions?.tabStack);
 			}
 		}
 
@@ -1355,15 +1453,22 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 
 		await this.doOpenEditor(firstEditor.editor, firstEditor.options, openEditorsOptions);
 
-		// Open the other ones inactive
+		// Open the other ones inactive after the first one: those that already
+		// follow it in order stay where they are, and the rest open after them,
+		// past any tab stack that they would open inside of
 		const inactiveEditors = editorsToOpen.slice(1);
-		const startingIndex = this.getIndexOfEditor(firstEditor.editor) + 1;
+		const indexAfterFirstEditor = this.model.indexOf(firstEditor.editor, undefined, openEditorsOptions) + 1;
+		let inPlaceCount = 0;
+		while (inPlaceCount < inactiveEditors.length && this.model.indexOf(inactiveEditors[inPlaceCount].editor, undefined, openEditorsOptions) === indexAfterFirstEditor + inPlaceCount) {
+			inPlaceCount++;
+		}
+		const indexPastInPlaceEditors = getIndexPastTabStack(this, indexAfterFirstEditor + inPlaceCount);
 		await Promises.settled(inactiveEditors.map(({ editor, options }, index) => {
 			return this.doOpenEditor(editor, {
 				...options,
 				inactive: true,
 				pinned: true,
-				index: startingIndex + index
+				index: index < inPlaceCount ? indexAfterFirstEditor + index : indexPastInPlaceEditors + index - inPlaceCount
 			}, {
 				...openEditorsOptions,
 				// optimization: update the title control later
@@ -1421,7 +1526,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 
 		// Move within same group
 		if (this === target) {
-			this.doMoveEditorInsideGroup(editor, options);
+			this.doMoveEditorInsideGroup(editor, options, internalOptions?.tabStack);
 			return true;
 		}
 
@@ -1431,7 +1536,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		}
 	}
 
-	private doMoveEditorInsideGroup(candidate: EditorInput, options?: IEditorOpenOptions): void {
+	private doMoveEditorInsideGroup(candidate: EditorInput, options?: IEditorOpenOptions, tabStack?: TabStackId | null): void {
 		const moveToIndex = options ? options.index : undefined;
 		if (typeof moveToIndex !== 'number') {
 			return; // do nothing if we move into same group without index
@@ -1443,6 +1548,13 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		const currentIndex = this.model.indexOf(candidate);
 		const editor = this.model.getEditorByIndex(currentIndex);
 		if (!editor) {
+			return;
+		}
+
+		// A tab stack hint decides the tab stack of an editor that moves after the sticky editors
+		if (tabStack !== undefined && !options?.sticky && moveToIndex >= this.model.stickyCount) {
+			this.unstickEditor(editor);
+			this.moveEditorsWithinGroup([editor], moveToIndex, tabStack);
 			return;
 		}
 
@@ -1537,7 +1649,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		}
 	}
 
-	copyEditor(editor: EditorInput, target: EditorGroupView, options?: IEditorOptions, internalOptions?: IInternalEditorTitleControlOptions): void {
+	copyEditor(editor: EditorInput, target: EditorGroupView, options?: IEditorOptions, internalOptions?: IInternalEditorOpenOptions): void {
 
 		// Move within same group because we do not support to show the same editor
 		// multiple times in the same group
@@ -2077,8 +2189,8 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		// Handle inactive first
 		for (const { editor, replacement, forceReplaceDirty, options } of inactiveReplacements) {
 
-			// Open inactive editor
-			await this.doOpenEditor(replacement, options);
+			// Open inactive editor in the tab stack of the replaced editor
+			await this.doOpenEditor(replacement, options, { tabStack: this.model.getTabStack(editor)?.id });
 
 			// Close replaced inactive editor unless they match
 			if (!editor.matches(replacement)) {
@@ -2099,8 +2211,8 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		// Handle active last
 		if (activeReplacement) {
 
-			// Open replacement as active editor
-			const openEditorResult = this.doOpenEditor(activeReplacement.replacement, activeReplacement.options);
+			// Open replacement as active editor in the tab stack of the replaced editor
+			const openEditorResult = this.doOpenEditor(activeReplacement.replacement, activeReplacement.options, { tabStack: this.model.getTabStack(activeReplacement.editor)?.id });
 
 			// Close replaced active editor unless they match
 			if (!activeReplacement.editor.matches(activeReplacement.replacement)) {

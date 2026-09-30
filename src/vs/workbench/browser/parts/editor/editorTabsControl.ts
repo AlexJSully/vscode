@@ -23,10 +23,10 @@ import { IQuickInputService } from '../../../../platform/quickinput/common/quick
 import { IThemeService, Themable } from '../../../../platform/theme/common/themeService.js';
 import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier, fillEditorsDragData, isWindowDraggedOver } from '../../dnd.js';
 import { EditorPane } from './editorPane.js';
-import { CONNECTED_EDITOR_TABS_SELECTOR, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView, IInternalEditorOpenOptions } from './editor.js';
+import { CONNECTED_EDITOR_TABS_SELECTOR, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView, IInternalEditorOpenOptions, TabStackEditorFocus } from './editor.js';
 import { IEditorCommandsContext, EditorResourceAccessor, IEditorPartOptions, SideBySideEditor, EditorsOrder, EditorInputCapabilities, IToolbarActions, GroupIdentifier, Verbosity } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
-import { ResourceContextKey, ActiveEditorPinnedContext, ActiveEditorStickyContext, ActiveEditorDirtyContext, ActiveEditorGroupLockedContext, ActiveEditorCanSplitInGroupContext, SideBySideEditorActiveContext, ActiveEditorFirstInGroupContext, ActiveEditorAvailableEditorIdsContext, applyAvailableEditorIds, ActiveEditorLastInGroupContext, ActiveEditorCannotCloseContext } from '../../../common/contextkeys.js';
+import { ResourceContextKey, ActiveEditorPinnedContext, ActiveEditorStickyContext, ActiveEditorDirtyContext, ActiveEditorGroupLockedContext, ActiveEditorCanSplitInGroupContext, SideBySideEditorActiveContext, ActiveEditorFirstInGroupContext, ActiveEditorAvailableEditorIdsContext, applyAvailableEditorIds, ActiveEditorLastInGroupContext, ActiveEditorCannotCloseContext, ActiveEditorInTabStackContext } from '../../../common/contextkeys.js';
 import { AnchorAlignment } from '../../../../base/browser/ui/contextview/contextview.js';
 import { assertReturnsDefined } from '../../../../base/common/types.js';
 import { isFirefox } from '../../../../base/browser/browser.js';
@@ -37,7 +37,7 @@ import { LocalSelectionTransfer } from '../../../../platform/dnd/browser/dnd.js'
 import { DraggedTreeItemsIdentifier } from '../../../../editor/common/services/treeViewsDnd.js';
 import { IEditorResolverService } from '../../../services/editor/common/editorResolverService.js';
 import { IEditorTitleControlDimensions } from './editorTitleControl.js';
-import { IReadonlyEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
+import { IReadonlyEditorGroupModel, TabStackId } from '../../../common/editor/editorGroupModel.js';
 import { EDITOR_CORE_NAVIGATION_COMMANDS } from './editorCommands.js';
 import { IAuxiliaryEditorPart, MergeGroupMode } from '../../../services/editor/common/editorGroupsService.js';
 import { isMacintosh } from '../../../../base/common/platform.js';
@@ -90,6 +90,21 @@ export interface IEditorTabsControl extends IDisposable {
 	unstickEditor(editor: EditorInput): void;
 	setActive(isActive: boolean): void;
 	updateEditorSelections(): void;
+
+	/**
+	 * Shows the tab stacks of the group as they are, after tab stacks were
+	 * created, deleted or changed, or editors joined, left or moved within them.
+	 */
+	updateTabStacks(): void;
+
+	/**
+	 * Opens the name and color bubble of the tab stack under its header, with
+	 * `focus` focused, when this tabs control shows that header.
+	 *
+	 * @returns whether the bubble opened.
+	 */
+	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean;
+
 	updateEditorLabel(editor: EditorInput): void;
 	updateEditorCapabilities(editor: EditorInput): void;
 	updateEditorDirty(editor: EditorInput): void;
@@ -136,6 +151,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 	private editorDirtyContext: IContextKey<boolean>;
 	private editorAvailableEditorIds: IContextKey<string>;
 	private editorCannotCloseContext: IContextKey<boolean>;
+	private editorInTabStackContext: IContextKey<boolean>;
 
 	private editorCanSplitInGroupContext: IContextKey<boolean>;
 	private sideBySideEditorContext: IContextKey<boolean>;
@@ -160,7 +176,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 		@INotificationService private readonly notificationService: INotificationService,
 		@IQuickInputService protected quickInputService: IQuickInputService,
 		@IThemeService themeService: IThemeService,
-		@IEditorResolverService private readonly editorResolverService: IEditorResolverService,
+		@IEditorResolverService protected readonly editorResolverService: IEditorResolverService,
 		@IHostService protected readonly hostService: IHostService,
 		@IMenuService protected readonly menuService: IMenuService,
 	) {
@@ -185,6 +201,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 		this.editorDirtyContext = ActiveEditorDirtyContext.bindTo(this.contextMenuContextKeyService);
 		this.editorAvailableEditorIds = ActiveEditorAvailableEditorIdsContext.bindTo(this.contextMenuContextKeyService);
 		this.editorCannotCloseContext = ActiveEditorCannotCloseContext.bindTo(this.contextMenuContextKeyService);
+		this.editorInTabStackContext = ActiveEditorInTabStackContext.bindTo(this.contextMenuContextKeyService);
 
 		this.editorCanSplitInGroupContext = ActiveEditorCanSplitInGroupContext.bindTo(this.contextMenuContextKeyService);
 		this.sideBySideEditorContext = SideBySideEditorActiveContext.bindTo(this.contextMenuContextKeyService);
@@ -588,6 +605,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 		this.editorStickyContext.set(this.tabsModel.isSticky(editor));
 		this.editorDirtyContext.set(editor.isDirty() && !editor.isSaving());
 		this.editorCannotCloseContext.set(editor.hasCapability(EditorInputCapabilities.CannotClose));
+		this.editorInTabStackContext.set(!!this.tabsModel.getTabStack(editor));
 		this.groupLockedContext.set(this.tabsModel.isLocked);
 		this.editorCanSplitInGroupContext.set(editor.hasCapability(EditorInputCapabilities.CanSplitInGroup));
 		this.sideBySideEditorContext.set(editor.typeId === SideBySideEditorInput.ID);
@@ -710,6 +728,10 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 	abstract setActive(isActive: boolean): void;
 
 	abstract updateEditorSelections(): void;
+
+	abstract updateTabStacks(): void;
+
+	abstract editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean;
 
 	abstract updateEditorLabel(editor: EditorInput): void;
 

@@ -161,9 +161,10 @@
 	row-gap: var(--vscode-spacing-size20);
 }
 
-/* Preserve the existing explicit selection and focus borders in high contrast. */
+/* Preserve the existing explicit selection and focus borders in high contrast. A tab stack
+ * member keeps its outline, which carries the color of its tab stack. */
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.selected:not(.active).tab-border-top > .tab-fill,
-.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.active.multi-selected.tab-border-top > .tab-fill,
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.active.multi-selected.tab-border-top:not(.tab-stack-member) > .tab-fill,
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.selected:not(.active).tab-border-top:not(.close-action-off) > .tab-actions,
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.active.multi-selected.tab-border-top:not(.close-action-off) > .tab-actions {
 	border-color: transparent;
@@ -212,7 +213,7 @@
 }
 
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.active:first-child > .tab-fill::before,
-.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.last-in-row + .tab.active > .tab-fill::before {
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > :is(.tab, .tab-stack-header).last-in-row + .tab.active > .tab-fill::before {
 	content: none;
 }
 
@@ -262,7 +263,7 @@
 }
 
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.active.connected-tab-left-edge > .tab-connected-edge::before,
-.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.last-in-row + .tab.active > .tab-connected-edge::before,
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > :is(.tab, .tab-stack-header).last-in-row + .tab.active > .tab-connected-edge::before,
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .modern-ui-editor-tab.active.connected-tab-left-edge > .tab-connected-edge::before {
 	content: none;
 }
@@ -386,7 +387,7 @@
 	outline-offset: calc(-1 * var(--vscode-strokeThickness));
 }
 
-.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container.wrapping .tabs-container > .tab.last-in-row + .tab:not(.connected-tab-upper-row):not(.sticky-compact).tab-actions-left > .tab-actions {
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container.wrapping .tabs-container > :is(.tab, .tab-stack-header).last-in-row + .tab:not(.connected-tab-upper-row):not(.sticky-compact).tab-actions-left > .tab-actions {
 	left: calc(var(--modern-ui-connected-tab-action-inset) - var(--vscode-spacing-size20) - var(--vscode-strokeThickness));
 }
 
@@ -542,7 +543,7 @@
 
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab:first-child:not(.connected-tab-upper-row) > .tab-fill,
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container.wrapping .tabs-container > .tab:first-child > .tab-fill,
-.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.last-in-row + .tab > .tab-fill {
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > :is(.tab, .tab-stack-header).last-in-row + .tab > .tab-fill {
 	left: 0;
 	border-top-left-radius: 0;
 	border-bottom-left-radius: 0;
@@ -572,4 +573,95 @@
 
 .modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.connected-tab-upper-row.active > .tab-actions {
 	border-radius: var(--vscode-cornerRadius-small);
+}
+
+/* The shoulders of an active neighbour curve over the header's padding, not over its chip. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab-stack-header {
+	padding-inline: var(--modern-ui-connected-tab-shoulder-radius);
+}
+
+/* Connected fills span the whole tab, and so does the tab stack indicator. In high contrast, in
+ * the row that joins the document, it stays beneath the active tab's fill, so that the shoulders
+ * curve over a neighbour's indicator. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.tab-stack-member > .tab-stack-indicator {
+	left: 0;
+	right: 0;
+	z-index: 0;
+}
+
+/* Rows above the document keep pills, so there the indicator underlines an active pill too.
+ * Outside high contrast, the indicators of the row that joins the document cover the separator,
+ * where the shoulders of the active tab end, so that the two meet. Drawn above the separator,
+ * which follows the tabs, an indicator is also drawn over the shoulder of the tab before it,
+ * which is only ever active in the same tab stack. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.tab-stack-member.connected-tab-upper-row > .tab-stack-indicator,
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.tab-stack-member > .tab-stack-indicator {
+	z-index: 1;
+}
+
+/* Unless the tabs wrap, the separator lies below them, so the indicator reaches down onto it, and
+ * so does the foot of the marker of a drop inside a tab stack, which continues the indicator. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container:not(.wrapping) .tabs-container > .tab.tab-stack-member > .tab-stack-indicator {
+	bottom: calc(-1 * var(--vscode-strokeThickness));
+}
+
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container:not(.wrapping) .tabs-container > :is(.tab, .tab-stack-header).drop-target-left.drop-target-in-tab-stack::after,
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container:not(.wrapping) .tabs-container > :is(.tab, .tab-stack-header).drop-target-right.drop-target-in-tab-stack::before {
+	height: calc(100% + var(--vscode-strokeThickness));
+}
+
+/* Unlike the tabs of the row that joins the document, a header keeps the gutters above and below
+ * the pills, so the marker of a drop on a header reaches over them, as tall as it is on those tabs,
+ * and the foot of the marker of a drop inside a tab stack stands where it does on those tabs. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container:not(.wrapping) .tabs-container > .tab-stack-header.drop-target-left::after,
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container:not(.wrapping) .tabs-container > .tab-stack-header.drop-target-right::before {
+	top: calc(-1 * var(--vscode-spacing-size40));
+	height: calc(100% + 2 * var(--vscode-spacing-size40));
+}
+
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container:not(.wrapping) .tabs-container > .tab-stack-header.drop-target-left.drop-target-in-tab-stack::after,
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container:not(.wrapping) .tabs-container > .tab-stack-header.drop-target-right.drop-target-in-tab-stack::before {
+	height: calc(100% + 2 * var(--vscode-spacing-size40) + var(--vscode-strokeThickness));
+}
+
+/* With pinned tabs on a separate row, the gutter above the headers of the other row is smaller. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs.two-tab-bars > .tabs-and-actions-container:not(:first-child):not(.wrapping) .tabs-container > .tab-stack-header.drop-target-left::after,
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs.two-tab-bars > .tabs-and-actions-container:not(:first-child):not(.wrapping) .tabs-container > .tab-stack-header.drop-target-right::before {
+	top: calc(-1 * var(--vscode-spacing-size20));
+}
+
+/* When the tabs wrap, a header in the row that joins the document keeps the gutters that the tabs of
+ * that row lose, so the marker of a drop on it reaches over them too, and the foot of the marker of a
+ * drop inside a tab stack stands on the line under the tabs, which stays within them. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container.wrapping .tabs-container > .tab-stack-header:not(.connected-tab-upper-row).drop-target-left::after,
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container.wrapping .tabs-container > .tab-stack-header:not(.connected-tab-upper-row).drop-target-right::before {
+	top: calc(-1 * var(--vscode-spacing-size20));
+	height: calc(100% + 2 * var(--vscode-spacing-size20));
+}
+
+/* The active tab stack member stays open to the document below it. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.active:not(.connected-tab-upper-row) > .tab-stack-indicator {
+	display: none;
+}
+
+/* Instead, its outline and shoulders take the color of its tab stack, where the indicators of
+ * the tabs next to it end, so the line under the tab stack runs around it. The overflow edge
+ * that stands in for its clipped part takes the same color. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.active.tab-stack-member,
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs > .tabs-and-actions-container > .monaco-scrollable-element > .tab-connected-overflow-edge.in-tab-stack {
+	--modern-ui-connected-tab-border: var(--tab-stack-color);
+}
+
+/* Its top edge stays too, although the frame draws the top edge of other tabs in the top row. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:not(:is(.hc-black, .hc-light)) .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.active.tab-stack-member.connected-tab-top-row:not(.connected-tab-upper-row) > .tab-fill {
+	border-top-color: var(--modern-ui-connected-tab-border);
+}
+
+/* High contrast keeps the focus and contrast border of the active tab stack member, and lines
+ * its top and sides inside that border in the color of its tab stack. */
+.modern-ui-tabs.modern-ui-connected-editor-tabs.monaco-workbench:is(.hc-black, .hc-light) .part.editor > .content .editor-group-container > .title.tabs .tabs-container > .tab.active.tab-stack-member:not(.connected-tab-upper-row) > .tab-fill {
+	box-shadow:
+		inset var(--vscode-strokeThickness) 0 var(--tab-stack-color),
+		inset calc(-1 * var(--vscode-strokeThickness)) 0 var(--tab-stack-color),
+		inset 0 var(--vscode-strokeThickness) var(--tab-stack-color);
 }

@@ -14,7 +14,7 @@ import { IView, orthogonal, LayoutPriority, IViewSize, Direction, SerializableGr
 import { GroupIdentifier, EditorInputWithOptions, IEditorPartOptions, IEditorPartOptionsChangeEvent, GroupModelChangeKind } from '../../../common/editor.js';
 import { EDITOR_GROUP_BORDER, EDITOR_PANE_BACKGROUND } from '../../../common/theme.js';
 import { distinct, coalesce } from '../../../../base/common/arrays.js';
-import { IEditorGroupView, getEditorPartOptions, impactsEditorPartOptions, IEditorPartCreationOptions, IEditorPartsView, IEditorGroupsView, IEditorGroupViewOptions } from './editor.js';
+import { IEditorGroupView, getEditorPartOptions, impactsEditorPartOptions, IEditorPartCreationOptions, IEditorPartsView, IEditorGroupsView, IEditorGroupViewOptions, getIndexPastTabStack } from './editor.js';
 import { EditorGroupView } from './editorGroupView.js';
 import { IConfigurationService, IConfigurationChangeEvent } from '../../../../platform/configuration/common/configuration.js';
 import { IDisposable, dispose, toDisposable, DisposableStore } from '../../../../base/common/lifecycle.js';
@@ -945,7 +945,7 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 
 		// Collect editors to move/copy
 		const editors: EditorInputWithOptions[] = [];
-		let index = (options && typeof options.index === 'number') ? options.index : targetView.count;
+		let index = (options && typeof options.index === 'number') ? getIndexPastTabStack(targetView, options.index) : targetView.count;
 		for (const editor of sourceView.editors) {
 			const inactive = !sourceView.isActive(editor) || this._activeGroup !== sourceView;
 

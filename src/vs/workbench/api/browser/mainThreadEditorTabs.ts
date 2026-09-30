@@ -602,6 +602,9 @@ export class MainThreadEditorTabs implements MainThreadEditorTabsShape {
 				// Treat as no-op so we do not rebuild the entire model (which would invalidate
 				// any `vscode.Tab` references the extension is currently holding).
 				break;
+			case GroupModelChangeKind.TAB_STACKS:
+				// Tab stacks are workbench-internal and not exposed in the tabs API.
+				break;
 			case GroupModelChangeKind.EDITOR_MOVE:
 				if (isGroupEditorMoveEvent(event) && event.editor && event.editorIndex !== undefined && event.oldEditorIndex !== undefined) {
 					this._onDidTabMove(groupId, event.editorIndex, event.oldEditorIndex, event.editor);

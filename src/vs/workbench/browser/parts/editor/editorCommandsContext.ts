@@ -9,8 +9,10 @@ import { URI } from '../../../../base/common/uri.js';
 import { IListService } from '../../../../platform/list/browser/listService.js';
 import { IEditorCommandsContext, isEditorCommandsContext, IEditorIdentifier, isEditorIdentifier } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
+import { ITabStack } from '../../../common/editor/editorGroupModel.js';
 import { IEditorGroup, IEditorGroupsService, isEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
+import { isTabStacksEnabled } from './editor.js';
 
 export interface IResolvedEditorCommandsContext {
 	readonly groupedEditors: {
@@ -55,6 +57,105 @@ export function resolveCommandsContext(commandArgs: unknown[], editorService: IE
 	}
 
 	return resolvedContext;
+}
+
+/**
+ * The editors of one group that a command adding editors to a tab stack
+ * applies to.
+ */
+interface IResolvedTabStackEditors {
+
+	/**
+	 * The group of the editors.
+	 */
+	readonly group: IEditorGroup;
+
+	/**
+	 * The editors, none of them sticky.
+	 */
+	readonly editors: readonly EditorInput[];
+}
+
+/**
+ * The tab stack that a command acting on a whole tab stack applies to.
+ */
+interface IResolvedTabStack {
+
+	/**
+	 * The group of the tab stack.
+	 */
+	readonly group: IEditorGroup;
+
+	/**
+	 * The tab stack.
+	 */
+	readonly tabStack: ITabStack;
+
+	/**
+	 * A copy of the editors of the tab stack, in order.
+	 */
+	readonly editors: EditorInput[];
+}
+
+function isTabStacksEnabledInGroup(group: IEditorGroup, editorGroupsService: IEditorGroupsService): boolean {
+	return isTabStacksEnabled(editorGroupsService.getPart(group).partOptions);
+}
+
+/**
+ * Returns the editors that a command adding editors to a tab stack applies to:
+ * the editors of the first group of the context, without the sticky editors.
+ * A tab stack belongs to one group and never holds sticky editors.
+ *
+ * @returns `undefined` when no editor is left or when tab stacks are disabled
+ * in the editor part of the group.
+ */
+export function resolveTabStackEditors(context: IResolvedEditorCommandsContext, editorGroupsService: IEditorGroupsService): IResolvedTabStackEditors | undefined {
+	const groupContext = context.groupedEditors[0];
+	if (!groupContext || !isTabStacksEnabledInGroup(groupContext.group, editorGroupsService)) {
+		return undefined;
+	}
+
+	const editors = groupContext.editors.filter(editor => !groupContext.group.isSticky(editor));
+	if (editors.length === 0) {
+		return undefined;
+	}
+
+	return { group: groupContext.group, editors };
+}
+
+/**
+ * Returns the editors that a command removing editors from their tab stacks
+ * applies to: the editors of each group of the context whose editor part has
+ * tab stacks enabled.
+ */
+export function resolveTabStackGroupedEditors(context: IResolvedEditorCommandsContext, editorGroupsService: IEditorGroupsService): IResolvedEditorCommandsContext['groupedEditors'] {
+	return context.groupedEditors.filter(({ group }) => isTabStacksEnabledInGroup(group, editorGroupsService));
+}
+
+/**
+ * Returns the tab stack that a command acting on a whole tab stack applies to:
+ * the tab stack of the editor the command was invoked on, which
+ * {@link resolveCommandsContext} puts first in the first group. That is the
+ * right-clicked tab for a tab context menu, and the active editor when the
+ * command has no editor context.
+ *
+ * @returns the group, the tab stack and a copy of its editors, or `undefined`
+ * when the editor is in no tab stack or when tab stacks are disabled in the
+ * editor part of the group.
+ */
+export function resolveTabStack(context: IResolvedEditorCommandsContext, editorGroupsService: IEditorGroupsService): IResolvedTabStack | undefined {
+	const groupContext = context.groupedEditors[0];
+	const editor = groupContext?.editors[0];
+	if (!groupContext || !editor || !isTabStacksEnabledInGroup(groupContext.group, editorGroupsService)) {
+		return undefined;
+	}
+
+	const tabStack = groupContext.group.getTabStack(editor);
+	if (!tabStack) {
+		return undefined;
+	}
+
+	return { group: groupContext.group, tabStack, editors: [...tabStack.editors] };
 }
 
 function getCommandsContext(commandArgs: unknown[], editorService: IEditorService, editorGroupsService: IEditorGroupsService, listService: IListService): IEditorCommandsContext[] {
