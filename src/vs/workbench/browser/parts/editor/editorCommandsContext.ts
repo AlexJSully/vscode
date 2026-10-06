@@ -59,41 +59,14 @@ export function resolveCommandsContext(commandArgs: unknown[], editorService: IE
 	return resolvedContext;
 }
 
-/**
- * The editors of one group that a command adding editors to a tab stack
- * applies to.
- */
 interface IResolvedTabStackEditors {
-
-	/**
-	 * The group of the editors.
-	 */
 	readonly group: IEditorGroup;
-
-	/**
-	 * The editors, none of them sticky.
-	 */
 	readonly editors: readonly EditorInput[];
 }
 
-/**
- * The tab stack that a command acting on a whole tab stack applies to.
- */
 interface IResolvedTabStack {
-
-	/**
-	 * The group of the tab stack.
-	 */
 	readonly group: IEditorGroup;
-
-	/**
-	 * The tab stack.
-	 */
 	readonly tabStack: ITabStack;
-
-	/**
-	 * A copy of the editors of the tab stack, in order.
-	 */
 	readonly editors: EditorInput[];
 }
 
@@ -102,12 +75,8 @@ function isTabStacksEnabledInGroup(group: IEditorGroup, editorGroupsService: IEd
 }
 
 /**
- * Returns the editors that a command adding editors to a tab stack applies to:
- * the editors of the first group of the context, without the sticky editors.
- * A tab stack belongs to one group and never holds sticky editors.
- *
- * @returns `undefined` when no editor is left or when tab stacks are disabled
- * in the editor part of the group.
+ * Returns the editors of the first group of the context without the sticky editors, since a tab
+ * stack belongs to one group and never holds sticky editors.
  */
 export function resolveTabStackEditors(context: IResolvedEditorCommandsContext, editorGroupsService: IEditorGroupsService): IResolvedTabStackEditors | undefined {
 	const groupContext = context.groupedEditors[0];
@@ -124,24 +93,15 @@ export function resolveTabStackEditors(context: IResolvedEditorCommandsContext, 
 }
 
 /**
- * Returns the editors that a command removing editors from their tab stacks
- * applies to: the editors of each group of the context whose editor part has
- * tab stacks enabled.
+ * Returns the grouped editors of the context in groups that show tab stacks.
  */
 export function resolveTabStackGroupedEditors(context: IResolvedEditorCommandsContext, editorGroupsService: IEditorGroupsService): IResolvedEditorCommandsContext['groupedEditors'] {
 	return context.groupedEditors.filter(({ group }) => isTabStacksEnabledInGroup(group, editorGroupsService));
 }
 
 /**
- * Returns the tab stack that a command acting on a whole tab stack applies to:
- * the tab stack of the editor the command was invoked on, which
- * {@link resolveCommandsContext} puts first in the first group. That is the
- * right-clicked tab for a tab context menu, and the active editor when the
- * command has no editor context.
- *
- * @returns the group, the tab stack and a copy of its editors, or `undefined`
- * when the editor is in no tab stack or when tab stacks are disabled in the
- * editor part of the group.
+ * Returns the tab stack of the editor that the command was invoked on, such as the right-clicked
+ * tab, or of the active editor without editor context.
  */
 export function resolveTabStack(context: IResolvedEditorCommandsContext, editorGroupsService: IEditorGroupsService): IResolvedTabStack | undefined {
 	const groupContext = context.groupedEditors[0];

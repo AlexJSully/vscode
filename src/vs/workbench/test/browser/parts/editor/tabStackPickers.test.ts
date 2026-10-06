@@ -10,6 +10,7 @@ import { DisposableStore, toDisposable } from '../../../../../base/common/lifecy
 import { URI } from '../../../../../base/common/uri.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { TestAccessibilityService } from '../../../../../platform/accessibility/test/common/testAccessibilityService.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { SyncDescriptor } from '../../../../../platform/instantiation/common/descriptors.js';
@@ -17,7 +18,7 @@ import { TestInstantiationService } from '../../../../../platform/instantiation/
 import { IInputOptions, IPickOptions, IQuickInputService, IQuickPickItem, QuickPickInput } from '../../../../../platform/quickinput/common/quickInput.js';
 import { Registry } from '../../../../../platform/registry/common/platform.js';
 import { IEditorGroupView } from '../../../../browser/parts/editor/editor.js';
-import { addEditorsToTabStackAndEditNew, changeTabStackColor, getTabStackColorPicks, getTabStackPicks, inputTabStackLabel, ITabStackColorPickItem, parseCustomTabStackColor, pickTabStack, pickTabStackColor, renameTabStack } from '../../../../browser/parts/editor/tabStackPickers.js';
+import { addEditorsToTabStackAndEditNew, changeTabStackColor, expandTabStack, getCollapsedTabStackPicks, getTabStackColorPicks, getTabStackPicks, inputTabStackLabel, ITabStackColorPickItem, parseCustomTabStackColor, pickTabStack, pickTabStackColor, renameTabStack } from '../../../../browser/parts/editor/tabStackPickers.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../common/editor.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { ITabStack } from '../../../../common/editor/editorGroupModel.js';
@@ -167,18 +168,18 @@ suite('TabStackPickers', () => {
 	});
 
 	test('tab stack picks list a new tab stack, a separator and each tab stack with its name, editors and color', () => {
-		const [authEditor, loginEditor, logEditor] = ['auth', 'login', 'log'].map(name => disposables.add(new TestEditorInput(URI.file(`/${name}`), name)));
+		const [authEditor, loginEditor, logEditor, docsEditor] = ['auth', 'login', 'log', 'docs'].map(name => disposables.add(new TestEditorInput(URI.file(`/${name}`), name)));
 		const tabStacks: ITabStack[] = [
 			{ id: 'named', label: 'Auth', color: 'blue', collapsed: false, editors: [authEditor, loginEditor] },
 			{ id: 'unnamed', label: '', color: '#ff0000', collapsed: true, editors: [logEditor] }
 		];
 
-		const items = getTabStackPicks(tabStacks);
+		const items = getTabStackPicks(tabStacks, [docsEditor]);
 
 		assert.deepStrictEqual({
 			items: describePicks(items),
 			tabStacks: items.map(item => item.type === 'separator' ? '---' : item.tabStack),
-			withoutTabStacks: describePicks(getTabStackPicks([]))
+			withoutTabStacks: describePicks(getTabStackPicks([], [docsEditor]))
 		}, {
 			items: [
 				'New Tab Stack | codicon codicon-add',
@@ -188,6 +189,80 @@ suite('TabStackPickers', () => {
 			],
 			tabStacks: [undefined, '---', 'named', 'unnamed'],
 			withoutTabStacks: ['New Tab Stack | codicon codicon-add']
+		});
+	});
+
+	test('tab stack picks leave out a tab stack that already holds every editor to add', () => {
+		const [authEditor, loginEditor, logEditor] = ['auth', 'login', 'log'].map(name => disposables.add(new TestEditorInput(URI.file(`/${name}`), name)));
+		const authTabStack: ITabStack = { id: 'auth', label: 'Auth', color: 'blue', collapsed: false, editors: [authEditor, loginEditor] };
+		const logTabStack: ITabStack = { id: 'log', label: 'Log', color: 'green', collapsed: false, editors: [logEditor] };
+		const labels = (items: readonly QuickPickInput<IQuickPickItem>[]) => items.map(item => item.type === 'separator' ? '---' : item.label);
+
+		assert.deepStrictEqual({
+			editorOfOneTabStack: labels(getTabStackPicks([authTabStack, logTabStack], [authEditor])),
+			editorsOfBothTabStacks: labels(getTabStackPicks([authTabStack, logTabStack], [authEditor, logEditor])),
+			editorOfTheOnlyTabStack: labels(getTabStackPicks([authTabStack], [authEditor]))
+		}, {
+			editorOfOneTabStack: ['New Tab Stack', '---', 'Log'],
+			editorsOfBothTabStacks: ['New Tab Stack', '---', 'Auth', 'Log'],
+			editorOfTheOnlyTabStack: ['New Tab Stack']
+		});
+	});
+
+	test('collapsed tab stack picks list each collapsed tab stack with its name, editors and color', () => {
+		const [docsEditor, authEditor, loginEditor, logEditor] = ['docs', 'auth', 'login', 'log'].map(name => disposables.add(new TestEditorInput(URI.file(`/${name}`), name)));
+		const tabStacks: ITabStack[] = [
+			{ id: 'expanded', label: 'Docs', color: 'green', collapsed: false, editors: [docsEditor] },
+			{ id: 'named', label: 'Auth', color: 'blue', collapsed: true, editors: [authEditor, loginEditor] },
+			{ id: 'unnamed', label: '', color: '#ff0000', collapsed: true, editors: [logEditor] }
+		];
+
+		const items = getCollapsedTabStackPicks(tabStacks);
+
+		assert.deepStrictEqual({ items: describePicks(items), tabStacks: items.map(item => item.tabStack) }, {
+			items: [
+				'Auth | Editor auth, Editor login | codicon codicon-circle-filled tabStack.blue',
+				'Unnamed Tab Stack | Editor log | data:image/svg+xml fill=#ff0000'
+			],
+			tabStacks: ['named', 'unnamed']
+		});
+	});
+
+	test('expanding a tab stack expands the only collapsed tab stack without asking, asks which one when there are several, and announces it while a screen reader is in use', async () => {
+		const { group, editors: [a, , c] } = await createTabStacksGroup('a', 'b', 'c', 'd');
+		group.updateTabStack(group.addEditorsToTabStack([a])!.id, { label: 'Auth', collapsed: true });
+		group.updateTabStack(group.addEditorsToTabStack([c])!.id, { collapsed: true });
+		const announcements: string[] = [];
+		// The screen reader is the boundary: it speaks what the command announces
+		const accessibilityService = new class extends TestAccessibilityService {
+			override isScreenReaderOptimized(): boolean { return true; }
+			override status(message: string): void { announcements.push(message); }
+		};
+		const collapsedTabStacks = () => group.tabStacks.filter(tabStack => tabStack.collapsed).map(tabStack => tabStack.label || 'unnamed');
+		const dismissing = new TestQuickInputService('', undefined);
+		const picking = new TestQuickInputService('Auth', undefined);
+		const notAsked = new TestQuickInputService('', undefined);
+
+		await expandTabStack(group, dismissing, accessibilityService);
+		const afterDismissing = collapsedTabStacks();
+		await expandTabStack(group, picking, accessibilityService);
+		const afterPicking = collapsedTabStacks();
+		await expandTabStack(group, notAsked, accessibilityService);
+		const afterTheOnlyOne = collapsedTabStacks();
+		await expandTabStack(group, notAsked, accessibilityService);
+
+		assert.deepStrictEqual({
+			afterDismissing,
+			afterPicking,
+			afterTheOnlyOne,
+			picks: { dismissing: dismissing.activeItems.length, picking: picking.activeItems.length, notAsked: notAsked.activeItems.length },
+			announcements
+		}, {
+			afterDismissing: ['Auth', 'unnamed'],
+			afterPicking: ['unnamed'],
+			afterTheOnlyOne: [],
+			picks: { dismissing: 1, picking: 1, notAsked: 0 },
+			announcements: ['Expanded tab stack Auth', 'Expanded unnamed tab stack']
 		});
 	});
 
@@ -251,9 +326,10 @@ suite('TabStackPickers', () => {
 
 	test('picking a tab stack returns its item, and a tab stack name is trimmed', async () => {
 		const tabStacks: ITabStack[] = [{ id: 'named', label: 'Auth', color: 'blue', collapsed: false, editors: [] }];
+		const editors = [disposables.add(new TestEditorInput(URI.file('/auth'), 'auth'))];
 
-		const picked = await pickTabStack(new TestQuickInputService('Auth', undefined), tabStacks);
-		const dismissed = await pickTabStack(new TestQuickInputService('', undefined), tabStacks);
+		const picked = await pickTabStack(new TestQuickInputService('Auth', undefined), tabStacks, editors);
+		const dismissed = await pickTabStack(new TestQuickInputService('', undefined), tabStacks, editors);
 		const label = await inputTabStackLabel(new TestQuickInputService('', '  Auth  '), 'Old');
 		const dismissedLabel = await inputTabStackLabel(new TestQuickInputService('', undefined), 'Old');
 

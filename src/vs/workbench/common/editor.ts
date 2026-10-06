@@ -1256,9 +1256,8 @@ export const enum GroupModelChangeKind {
 	/* Tab Stack Changes */
 
 	/**
-	 * Tab stacks were created, deleted or changed, or editors joined or left
-	 * them. The event is not about a single editor, and editors that move
-	 * without joining or leaving a tab stack only fire EDITOR_MOVE.
+	 * Tab stacks were created, deleted or changed, or editors joined or left them. It names no
+	 * editor, and moves within a tab stack only fire EDITOR_MOVE.
 	 */
 	TAB_STACKS
 }
@@ -1302,7 +1301,7 @@ interface IEditorPartConfiguration {
 	tabSizingFixedMaxWidth?: number;
 	pinnedTabSizing?: 'normal' | 'compact' | 'shrink';
 	pinnedTabsOnSeparateRow?: boolean;
-	/** The `workbench.editor.enableTabStacks` setting; `isTabStacksEnabled` also requires `showTabs` to be `multiple`. */
+	/** Read through `isTabStacksEnabled`, which also requires `showTabs` to be `multiple`. */
 	enableTabStacks?: boolean;
 	tabHeight?: 'default' | 'compact';
 	preventPinnedEditorClose?: PreventPinnedEditorClose;

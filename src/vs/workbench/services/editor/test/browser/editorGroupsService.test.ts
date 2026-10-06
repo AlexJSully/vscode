@@ -24,13 +24,13 @@ import { IContextKeyService, RawContextKey } from '../../../../../platform/conte
 import { Emitter, Event } from '../../../../../base/common/event.js';
 import { basename, isEqual } from '../../../../../base/common/resources.js';
 import { CloseAllEditorGroupsAction } from '../../../../browser/parts/editor/editorActions.js';
-import { ActiveEditorInTabStackContext, EditorGroupHasTabStacksContext } from '../../../../common/contextkeys.js';
+import { ActiveEditorGroupHasCollapsedTabStacksContext, ActiveEditorInTabStackContext, EditorGroupHasTabStacksContext } from '../../../../common/contextkeys.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { IContextMenuMenuDelegate, IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
-import { IEditorGroupView } from '../../../../browser/parts/editor/editor.js';
+import { IEditorGroupView, moveEditorsByTabWithTabStacks } from '../../../../browser/parts/editor/editor.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
-import { EventType } from '../../../../../base/browser/dom.js';
-import { LocalSelectionTransfer } from '../../../../../platform/dnd/browser/dnd.js';
+import { EventType, getActiveElement, isHTMLElement } from '../../../../../base/browser/dom.js';
+import { Extensions as DragAndDropExtensions, IDragAndDropContributionRegistry, LocalSelectionTransfer } from '../../../../../platform/dnd/browser/dnd.js';
 import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier, fillEditorsDragData } from '../../../../browser/dnd.js';
 import { isMacintosh } from '../../../../../base/common/platform.js';
 import { EditorService } from '../../browser/editorService.js';
@@ -40,7 +40,9 @@ import { DraggedTreeItemsIdentifier, TreeViewsDnDService } from '../../../../../
 import { createStringDataTransferItem, UriList, VSDataTransfer } from '../../../../../base/common/dataTransfer.js';
 import { Mimes } from '../../../../../base/common/mime.js';
 import { ITextEditorService } from '../../../textfile/common/textEditorService.js';
-import { timeout } from '../../../../../base/common/async.js';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
+import { WorkspaceTrustUriResponse } from '../../../../../platform/workspace/common/workspaceTrust.js';
+import { TestAccessibilityService } from '../../../../../platform/accessibility/test/common/testAccessibilityService.js';
 
 suite('EditorGroupsService', () => {
 
@@ -2512,6 +2514,32 @@ suite('EditorGroupsService', () => {
 		assert.deepStrictEqual({ editors: tabStackState(group), tabBar: tabBar(group) }, { editors: '5a* 3a 1a', tabBar: 'H 5 3 1' });
 	});
 
+	test('tab stacks - replaceEditors while tab stacks are hidden keeps the replacements in the tab stack of the replaced editors once shown', async () => {
+		const results: Record<string, string> = {};
+		for (const [name, fixture, active, replaced, replacement] of [
+			['inactive', '1a 2a 3a 4', '4', '2', '9'],
+			['active', '1a 2a 3a 4', '2', '2', '9'],
+			['alreadyOpen', '1a 2b 3b 4 5', '5', '3', '4']
+		]) {
+			const [part] = await createPart(createTabStacksInstantiationService());
+			const group = part.activeGroup;
+			await openFixture(group, fixture);
+			await group.openEditor(editorOf(group, active));
+
+			const enforced = part.enforcePartOptions({ showTabs: 'single' });
+			await group.replaceEditors([{ editor: editorOf(group, replaced), replacement: createNamedTestEditors(replacement)[0] }]);
+			enforced.dispose();
+
+			results[name] = tabStackState(group);
+		}
+
+		assert.deepStrictEqual(results, {
+			inactive: '1a 9a 3a 4*',
+			active: '1a 9a* 3a 4',
+			alreadyOpen: '1a 2b 4b 5*'
+		});
+	});
+
 	test('tab stacks - collapsing the tab stack of the active editor opens the nearest editor outside of it', async () => {
 		const [part] = await createPart(createTabStacksInstantiationService());
 		const group = part.activeGroup;
@@ -2580,7 +2608,7 @@ suite('EditorGroupsService', () => {
 		});
 	});
 
-	test('tab stacks - enforcing a single tab keeps tab stacks and their collapsed state', async () => {
+	test('tab stacks - enforcing a single tab hides tab stacks and restores them with their collapsed state', async () => {
 		const [part] = await createPart(createTabStacksInstantiationService());
 		const group = part.activeGroup;
 
@@ -2593,9 +2621,10 @@ suite('EditorGroupsService', () => {
 		const whileEnforced = tabStackState(group);
 		enforced.dispose();
 
-		assert.deepStrictEqual({ whileEnforced, afterwards: tabStackState(group) }, {
-			whileEnforced: '1a^ 2a^ 3b 4*',
-			afterwards: '1a^ 2a^ 3b 4*'
+		assert.deepStrictEqual({ whileEnforced, afterwards: tabStackState(group), tabBar: tabBar(group) }, {
+			whileEnforced: '1 2 3 4*',
+			afterwards: '1a^ 2a^ 3b 4*',
+			tabBar: 'H^ H 3 4'
 		});
 	});
 
@@ -2614,7 +2643,7 @@ suite('EditorGroupsService', () => {
 		const openedWithSingleTab = group.editTabStack(tabStack);
 		enforced.dispose();
 
-		assert.deepStrictEqual({ opened, openedWithSingleTab, openedWithTabsAgain: group.editTabStack(tabStack) }, {
+		assert.deepStrictEqual({ opened, openedWithSingleTab, openedWithTabsAgain: group.editTabStack(group.tabStacks[0].id) }, {
 			opened: true,
 			openedWithSingleTab: false,
 			openedWithTabsAgain: true
@@ -2728,6 +2757,32 @@ suite('EditorGroupsService', () => {
 		});
 	});
 
+	test('tab stacks - a tab stack operation that moves no editor sets the accessible name of each tab and of the header once', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+		await openFixture(group, '1 2a 3a 4');
+		const tabStack = group.tabStacks[0].id;
+		const accessibleNameWrites = (operation: () => void) => {
+			const observer = new MutationObserver(() => { });
+			observer.observe(group.element, { subtree: true, attributeFilter: ['aria-label'] });
+			operation();
+			const slots = observer.takeRecords().map(({ target }) => target).filter(isHTMLElement).filter(element => element.matches('.tab, .tab-stack-header'));
+			observer.disconnect();
+
+			return slots.map(slot => slot.getAttribute('data-resource-name') ?? 'H').join(' ');
+		};
+
+		assert.deepStrictEqual({
+			add: accessibleNameWrites(() => group.addEditorsToTabStack([editorOf(group, '4')], tabStack)),
+			rename: accessibleNameWrites(() => group.updateTabStack(tabStack, { label: 'Auth' })),
+			remove: accessibleNameWrites(() => group.removeEditorsFromTabStack([editorOf(group, '4')]))
+		}, {
+			add: '1 2 3 4 H',
+			rename: '1 2 3 4 H',
+			remove: '1 2 3 4 H'
+		});
+	});
+
 	test('tab stacks - moveEditorsWithinGroup pins the moved editors', async () => {
 		const [part] = await createPart(createTabStacksInstantiationService());
 		const group = part.activeGroup;
@@ -2739,6 +2794,197 @@ suite('EditorGroupsService', () => {
 		group.moveEditorsWithinGroup([previewEditor], 0);
 
 		assert.deepStrictEqual(tabStackState(group), '3* 1 2');
+	});
+
+	test('tab stacks - moveEditorsWithinGroup moves editors dropped among the sticky editors one at a time, and the tab bar shows them pinned', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService(undefined, { pinnedTabsOnSeparateRow: true }));
+		const group = part.activeGroup;
+
+		const [first, second, third, fourth] = await openPinnedTestEditors(group, '1', '2', '3', '4', '5');
+		group.stickEditor(first);
+		group.stickEditor(second);
+		group.addEditorsToTabStack([third, fourth]);
+
+		group.moveEditorsWithinGroup([third, fourth], 1);
+
+		assert.deepStrictEqual({ state: tabStackState(group), tabBar: tabBar(group) }, {
+			state: '1s 3s 4s 2s 5*',
+			tabBar: '1 3 4 2 | 5'
+		});
+	});
+
+	test('tab stacks - copyEditor within its group forwards the tab stack hint, as moveEditor does', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+
+		const [first, second, third] = await openPinnedTestEditors(group, '1', '2', '3', '4');
+		const tabStack = group.addEditorsToTabStack([second, third])!.id;
+
+		group.copyEditor(first, group, { index: 2 }, { tabStack });
+
+		assert.deepStrictEqual(tabStackState(group), '2a 3a 1a 4*');
+	});
+
+	/**
+	 * Opens the fixture with the editor marked `*` active and those marked `+`
+	 * selected, and describes the group after each press, or `declined` where
+	 * tab stacks do not change the move.
+	 */
+	async function openMarkedFixture(group: IEditorGroup, fixture: string): Promise<void> {
+		await openFixture(group, fixture.replace(/[*+]/g, ''));
+		const editorsMarked = (marker: string) => fixture.split(' ').filter(token => token.endsWith(marker)).map(token => editorOf(group, /^\d+/.exec(token)![0]));
+		await group.setSelection(editorsMarked('*')[0], editorsMarked('+'));
+	}
+
+	async function movesByTab(fixture: string, presses: string): Promise<string> {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const group = part.activeGroup;
+		await openMarkedFixture(group, fixture);
+
+		const states = presses.split(', ').map(press => {
+			const [to, value] = press.split(' ');
+
+			return moveEditorsByTabWithTabStacks(group, group.selectedEditors, { to, value: Number(value ?? 1) }, new TestAccessibilityService()) ? tabStackState(group) : 'declined';
+		});
+
+		return `${fixture}, ${presses}: ${states.join(' / ')}`;
+	}
+
+	test('tab stacks - moving editors by tab joins or leaves an expanded tab stack at its edge before moving, hops over a collapsed one, leaves at the end of the tabs, moves a whole tab stack past a tab or a tab stack and never crosses the pinned tabs, as Chrome does', async () => {
+		const results = [];
+		for (const [fixture, presses] of [
+			['1 2* 3a 4a 5', 'right, right'],
+			['1 2* 3a 4a 5', 'right 2'],
+			['1 2a 3a* 4', 'right, right'],
+			['1* 2a^ 3a^ 4', 'right'],
+			['1 2a^ 3a^ 4*', 'left'],
+			['1 2a 3a*', 'right, right'],
+			['1a 2a* 3b 4b', 'right, right'],
+			['1s 2a* 3a 4', 'left, left'],
+			['1s 2s* 3a 4', 'right, left'],
+			['1 2a* 3a+ 4b 5b 6', 'right, left'],
+			['1 2* 3a+ 4a', 'right, right'],
+			['1* 2 3+ 4a 5a', 'right'],
+			['1s 2 3a 4a* 5', 'first'],
+			['1s 2 3a 4a* 5', 'last'],
+			['1 2 3a* 4a+', 'first'],
+			['1s* 2s 3a 4', 'last'],
+			['1s 2s* 3a 4a', 'first'],
+			['1s 2* 3', 'left'],
+		] as const) {
+			results.push(await movesByTab(fixture, presses));
+		}
+
+		assert.deepStrictEqual(results, [
+			'1 2* 3a 4a 5, right, right: 1 2a* 3a 4a 5 / 1 3a 2a* 4a 5',
+			'1 2* 3a 4a 5, right 2: 1 3a 2a* 4a 5',
+			'1 2a 3a* 4, right, right: 1 2a 3* 4 / 1 2a 4 3*',
+			'1* 2a^ 3a^ 4, right: 2a^ 3a^ 1* 4',
+			'1 2a^ 3a^ 4*, left: 1 4* 2a^ 3a^',
+			'1 2a 3a*, right, right: 1 2a 3* / 1 2a 3*',
+			'1a 2a* 3b 4b, right, right: 1a 2* 3b 4b / 1a 2b* 3b 4b',
+			'1s 2a* 3a 4, left, left: 1s 2* 3a 4 / 1s 2* 3a 4',
+			'1s 2s* 3a 4, right, left: 1s 2s* 3a 4 / 2s* 1s 3a 4',
+			'1 2a* 3a+ 4b 5b 6, right, left: 1 4a 5a 2b* 3b 6 / 1 2a* 3a 4b 5b 6',
+			'1 2* 3a+ 4a, right, right: 1 2* 3 4a / 1 2a* 3a 4a',
+			'1* 2 3+ 4a 5a, right: 2 1* 3a 4a 5a',
+			'1s 2 3a 4a* 5, first: 1s 4* 2 3a 5',
+			'1s 2 3a 4a* 5, last: 1s 2 3a 5 4*',
+			'1 2 3a* 4a+, first: 3a* 4a 1 2',
+			'1s* 2s 3a 4, last: 2s 1s* 3a 4',
+			'1s 2s* 3a 4a, first: 2s* 1s 3a 4a',
+			'1s 2* 3, left: declined',
+		]);
+	});
+
+	test('tab stacks - moving editors by tab announces the active editor joining or leaving a tab stack while a screen reader is in use', async () => {
+		const announcements: string[] = [];
+		for (const screenReaderOptimized of [true, false]) {
+			const [part] = await createPart(createTabStacksInstantiationService());
+			const group = part.activeGroup;
+			await openFixture(group, '1 2 3a 4b');
+			group.updateTabStack(group.tabStacks[1].id, { label: 'Auth' });
+			await group.openEditor(editorOf(group, '2'));
+			const accessibilityService = new class extends TestAccessibilityService {
+				override isScreenReaderOptimized(): boolean {
+					return screenReaderOptimized;
+				}
+
+				override status(message: string): void {
+					announcements.push(`${tabStackState(group)}: ${message}`);
+				}
+			};
+
+			for (let press = 0; press < 6; press++) {
+				moveEditorsByTabWithTabStacks(group, group.selectedEditors, { to: 'right', value: 1 }, accessibilityService);
+			}
+		}
+
+		assert.deepStrictEqual(announcements, [
+			'1 2a* 3a 4b: Moved into unnamed tab stack',
+			'1 3a 2* 4b: Removed from unnamed tab stack',
+			'1 3a 2b* 4b: Moved into tab stack Auth',
+			'1 3a 4b 2*: Removed from tab stack Auth',
+		]);
+	});
+
+	test('tab stacks - moving editors by tab keeps the keyboard focus on the tab of the moved editor when the tab bar detaches or reorders the focused tab, as past a collapsed tab stack', async () => {
+		const results = [];
+		for (const [fixture, focused, to] of [
+			['1* 2a^ 3a^ 4', '1', 'right'],
+			['1 2a^ 3a^ 4*', '4', 'left'],
+			['1 2a^ 3a^ 4*', '4', 'first'],
+			['1* 2a^ 3a^ 4', '1', 'last'],
+			['1 2a* 3a+ 4b^ 5b^ 6', '2', 'right'],
+			['1a* 2a 3a 4', '1', 'left'],
+		] as const) {
+			const [part] = await createShownPart();
+			const group = part.activeGroup;
+			await openMarkedFixture(group, fixture);
+			tabOf(group, focused).focus();
+
+			moveEditorsByTabWithTabStacks(group, group.selectedEditors, { to, value: 1 }, new TestAccessibilityService());
+			results.push(`${fixture}, ${to}: ${tabStackState(group)}, focus ${getActiveElement()?.getAttribute('data-resource-name') ?? 'lost'}`);
+		}
+
+		assert.deepStrictEqual(results, [
+			'1* 2a^ 3a^ 4, right: 2a^ 3a^ 1* 4, focus 1',
+			'1 2a^ 3a^ 4*, left: 1 4* 2a^ 3a^, focus 4',
+			'1 2a^ 3a^ 4*, first: 4* 1 2a^ 3a^, focus 4',
+			'1* 2a^ 3a^ 4, last: 2a^ 3a^ 4 1*, focus 1',
+			'1 2a* 3a+ 4b^ 5b^ 6, right: 1 4a^ 5a^ 2b* 3b 6, focus 2',
+			'1a* 2a 3a 4, left: 1* 2a 3a 4, focus 1',
+		]);
+	});
+
+	test('tab stacks - a focused tab stack header keeps the keyboard focus when the tab bar moves it, and passes it to the tab of the active editor, or else to the group, when the tab bar removes it', async () => {
+		const results = [];
+		for (const [fixture, change, editorConfiguration] of [
+			['1* 2a 3a 4', 'right', undefined],
+			['1* 2a 3a 4', 'ungroup', undefined],
+			['1s* 2a 3a 4', 'ungroup', { pinnedTabsOnSeparateRow: true }],
+		] as const) {
+			const [part] = await createShownPart(editorConfiguration);
+			const group = part.activeGroup;
+			await openMarkedFixture(group, fixture);
+			let groupFocus = 0;
+			disposables.add(group.onDidFocus(() => groupFocus++));
+			tabStackHeaderOf(group, 0).focus();
+
+			if (change === 'right') {
+				moveEditorsByTabWithTabStacks(group, group.selectedEditors, { to: 'right', value: 1 }, new TestAccessibilityService());
+			} else {
+				group.removeEditorsFromTabStack(group.tabStacks[0].editors);
+			}
+			const focus = getActiveElement();
+			results.push(`${fixture}, ${change}: ${tabStackState(group)}, focus ${focus?.classList.contains('tab-stack-header') ? 'header' : focus?.getAttribute('data-resource-name') ?? (groupFocus > 0 ? 'group' : 'lost')}`);
+		}
+
+		assert.deepStrictEqual(results, [
+			'1* 2a 3a 4, right: 1a* 2a 3a 4, focus header',
+			'1* 2a 3a 4, ungroup: 1* 2 3 4, focus 1',
+			'1s* 2a 3a 4, ungroup: 1s* 2 3 4, focus group',
+		]);
 	});
 
 	test('tab stacks - openEditors from an editor in a tab stack opens the other editors in order after the tab stack', async () => {
@@ -2777,18 +3023,137 @@ suite('EditorGroupsService', () => {
 		]);
 	});
 
-	test('tab stacks - mergeGroup at an index inside a tab stack moves the editors in order after the tab stack', async () => {
+	test('tab stacks - mergeGroup at an index inside a tab stack moves the editors in order after the tab stack and keeps both tab stacks', async () => {
 		const [part] = await createPart(createTabStacksInstantiationService());
 		const targetGroup = part.activeGroup;
 
-		const [, second, third] = await openPinnedTestEditors(targetGroup, '1', '2', '3', '4');
-		targetGroup.addEditorsToTabStack([second, third]);
+		await openFixture(targetGroup, '1 2a 3a 4');
 		const sourceGroup = part.addGroup(targetGroup, GroupDirection.RIGHT);
-		await openPinnedTestEditors(sourceGroup, '5', '6');
+		await openFixture(sourceGroup, '5a 6a');
+		part.activateGroup(sourceGroup);
 
 		part.mergeGroup(sourceGroup, targetGroup, { index: 2 });
 
-		assert.deepStrictEqual(tabStackState(targetGroup), '1 2a 3a 5 6* 4');
+		assert.deepStrictEqual(tabStackState(targetGroup), '1 2a 3a 5b 6b* 4');
+	});
+
+	test('tab stacks - mergeGroup keeps the tab stacks of the merged group with their name, color and collapsed state, also as a copy', async () => {
+		const results = [];
+		for (const mode of [MergeGroupMode.MOVE_EDITORS, MergeGroupMode.COPY_EDITORS]) {
+			const [part] = await createPart(createTabStacksInstantiationService());
+			const targetGroup = part.activeGroup;
+			await openFixture(targetGroup, '1 2');
+			const sourceGroup = part.addGroup(targetGroup, GroupDirection.RIGHT);
+			await openFixture(sourceGroup, '3a^ 4a^ 5b 6');
+			sourceGroup.updateTabStack(sourceGroup.tabStacks[0].id, { label: 'Auth', color: 'red' });
+			part.activateGroup(sourceGroup);
+
+			part.mergeGroup(sourceGroup, targetGroup, { mode });
+
+			results.push({
+				target: tabStackState(targetGroup),
+				tabStacks: targetGroup.tabStacks.map(({ label, color }) => ({ label, color })),
+				source: part.groups.includes(sourceGroup) ? tabStackState(sourceGroup) : undefined
+			});
+		}
+
+		const tabStacks = [{ label: 'Auth', color: 'red' }, { label: '', color: 'purple' }];
+		assert.deepStrictEqual(results, [
+			{ target: '1 2 3a^ 4a^ 5b 6*', tabStacks, source: undefined },
+			{ target: '1 2 3a^ 4a^ 5b 6*', tabStacks, source: '3a^ 4a^ 5b 6*' }
+		]);
+	});
+
+	test('tab stacks - removing a group, applying a layout with fewer groups and joining all groups keep the tab stacks of the merged group', async () => {
+		const merges: [string, (part: TestEditorPart, targetGroup: IEditorGroupView, sourceGroup: IEditorGroupView) => void][] = [
+			['removeGroup', (part, _targetGroup, sourceGroup) => part.removeGroup(sourceGroup)],
+			['applyLayout', part => part.applyLayout({ groups: [{}], orientation: GroupOrientation.HORIZONTAL })],
+			['mergeAllGroups', (part, targetGroup) => part.mergeAllGroups(targetGroup)]
+		];
+
+		const results: string[] = [];
+		for (const [name, merge] of merges) {
+			const [part] = await createPart(createTabStacksInstantiationService());
+			const targetGroup = part.activeGroup;
+			await openFixture(targetGroup, '1 2');
+			const sourceGroup = part.addGroup(targetGroup, GroupDirection.RIGHT);
+			await openFixture(sourceGroup, '3a^ 4a^ 5b 6');
+			part.activateGroup(sourceGroup);
+
+			merge(part, targetGroup, sourceGroup);
+
+			results.push(`${name}: ${part.groups.map(group => tabStackState(group)).join(' | ')}`);
+		}
+
+		assert.deepStrictEqual(results, [
+			'removeGroup: 1 2 3a^ 4a^ 5b 6*',
+			'applyLayout: 1 2 3a^ 4a^ 5b 6*',
+			'mergeAllGroups: 1 2 3a^ 4a^ 5b 6*'
+		]);
+	});
+
+	test('tab stacks - merging with preserveExistingIndex, as closing an auxiliary window does, keeps a tab stack as its longest run', async () => {
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const targetGroup = part.activeGroup;
+		await openFixture(targetGroup, '2 4');
+		const sourceGroup = part.addGroup(targetGroup, GroupDirection.RIGHT);
+		await openFixture(sourceGroup, '1a 2a 3a');
+		part.activateGroup(sourceGroup);
+
+		part.mergeAllGroups(targetGroup, { preserveExistingIndex: true });
+
+		assert.deepStrictEqual(tabStackState(targetGroup), '2 4 1a 3a*');
+	});
+
+	test('tab stacks - merging a group that shares editors with a tab stack of the target keeps that tab stack whole', async () => {
+		const results: string[] = [];
+		for (const name of ['split editor', 'duplicate group']) {
+			const [part] = await createPart(createTabStacksInstantiationService());
+			const group = part.activeGroup;
+			await openFixture(group, '1a 2a 3');
+			if (name === 'split editor') {
+				const otherGroup = part.addGroup(group, GroupDirection.RIGHT);
+				group.copyEditor(editorOf(group, '1'), otherGroup);
+				part.activateGroup(otherGroup);
+				part.mergeGroup(otherGroup, group);
+			} else {
+				part.copyGroup(group, group, GroupDirection.RIGHT);
+				part.mergeAllGroups(group);
+			}
+
+			results.push(`${name}: ${tabStackState(group)} | ${tabBar(group)}`);
+		}
+
+		assert.deepStrictEqual(results, [
+			'split editor: 1a* 2a 3 | H 1 2 3',
+			'duplicate group: 1a 2a 3* | H 1 2 3'
+		]);
+	});
+
+	test('tab stacks - mergeGroup as a copy keeps an editor whose copy does not match it in its tab stack', async () => {
+		class NonMatchingCopyTestEditorInput extends TestFileEditorInput {
+			override copy(): EditorInput {
+				return createTestFileEditorInput(URI.file('8'), this.typeId);
+			}
+		}
+
+		const [part] = await createPart(createTabStacksInstantiationService());
+		const targetGroup = part.activeGroup;
+		await openFixture(targetGroup, '7');
+		const sourceGroup = part.addGroup(targetGroup, GroupDirection.RIGHT);
+		await openFixture(sourceGroup, '1a 2a 3a', async names => {
+			const editors = names.map(name => name === '2' ? disposables.add(new NonMatchingCopyTestEditorInput(URI.file(name), TEST_EDITOR_INPUT_ID)) : createNamedTestEditors(name)[0]);
+			for (const editor of editors) {
+				await sourceGroup.openEditor(editor, { pinned: true });
+			}
+
+			return editors;
+		});
+		part.activateGroup(sourceGroup);
+
+		part.mergeGroup(sourceGroup, targetGroup, { mode: MergeGroupMode.COPY_EDITORS });
+
+		assert.deepStrictEqual(tabStackState(targetGroup), '7 1a 8a 3a*');
 	});
 
 	test('tab stacks - an editor moved to another group opens outside of tab stacks', async () => {
@@ -2932,17 +3297,87 @@ suite('EditorGroupsService', () => {
 		await group.openEditor(second);
 		const afterOpeningEditorInside = contextKeys(group);
 
+		const enforced = part.enforcePartOptions({ showTabs: 'single' });
+		const whileHidden = contextKeys(group);
+		enforced.dispose();
+		const afterShownAgain = contextKeys(group);
+
 		group.removeEditorsFromTabStack([second]);
 		const afterRemovingTabStack = contextKeys(group);
 
-		assert.deepStrictEqual({ initially, afterAddingActiveEditor, copiedGroup, afterOpeningEditorOutside, afterOpeningEditorInside, afterRemovingTabStack }, {
+		assert.deepStrictEqual({ initially, afterAddingActiveEditor, copiedGroup, afterOpeningEditorOutside, afterOpeningEditorInside, whileHidden, afterShownAgain, afterRemovingTabStack }, {
 			initially: { activeEditorIsInTabStack: false, editorGroupHasTabStacks: false },
 			afterAddingActiveEditor: { activeEditorIsInTabStack: true, editorGroupHasTabStacks: true },
 			copiedGroup: { activeEditorIsInTabStack: true, editorGroupHasTabStacks: true },
 			afterOpeningEditorOutside: { activeEditorIsInTabStack: false, editorGroupHasTabStacks: true },
 			afterOpeningEditorInside: { activeEditorIsInTabStack: true, editorGroupHasTabStacks: true },
+			whileHidden: { activeEditorIsInTabStack: false, editorGroupHasTabStacks: false },
+			afterShownAgain: { activeEditorIsInTabStack: true, editorGroupHasTabStacks: true },
 			afterRemovingTabStack: { activeEditorIsInTabStack: false, editorGroupHasTabStacks: false }
 		});
+	});
+
+	test('tab stacks - the context key of collapsed tab stacks in the active group follows collapsing, expanding, hiding and the active group', async () => {
+		const contextKeyService = new MockScopableContextKeyService();
+		const [part] = await createPart(createTabStacksInstantiationService(contextKeyService));
+		const group = part.activeGroup;
+		await openFixture(group, '1 2a 3');
+		const otherGroup = part.addGroup(group, GroupDirection.RIGHT);
+		await openPinnedTestEditors(otherGroup, '4');
+		part.activateGroup(group);
+		const contextKeys = () => ({
+			group: group.scopedContextKeyService.getContextKeyValue(ActiveEditorGroupHasCollapsedTabStacksContext.key),
+			global: contextKeyService.getContextKeyValue(ActiveEditorGroupHasCollapsedTabStacksContext.key)
+		});
+
+		const initially = contextKeys();
+		group.updateTabStack(group.tabStacks[0].id, { collapsed: true });
+		const afterCollapsing = contextKeys();
+		part.activateGroup(otherGroup);
+		const otherGroupActive = contextKeys();
+		part.activateGroup(group);
+		const enforced = part.enforcePartOptions({ showTabs: 'single' });
+		const whileHidden = contextKeys();
+		enforced.dispose();
+		const afterShownAgain = contextKeys();
+		group.updateTabStack(group.tabStacks[0].id, { collapsed: false });
+		const afterExpanding = contextKeys();
+
+		assert.deepStrictEqual({ initially, afterCollapsing, otherGroupActive, whileHidden, afterShownAgain, afterExpanding }, {
+			initially: { group: false, global: false },
+			afterCollapsing: { group: true, global: true },
+			otherGroupActive: { group: true, global: false },
+			whileHidden: { group: false, global: false },
+			afterShownAgain: { group: true, global: true },
+			afterExpanding: { group: false, global: false }
+		});
+	});
+
+	test('tab stacks - a click on a focused tab stack header toggles its tab stack and keeps the header in place, so focus is not lost, and a mouse press on it also passes focus to the active editor of the group', async () => {
+		const [part] = await createShownPart();
+		const group = part.activeGroup;
+		await openFixture(group, '1 2a 3a 4b 5');
+		await group.openEditor(editorOf(group, '4'));
+		let groupFocus = 0;
+		disposables.add(group.onDidFocus(() => groupFocus++));
+
+		const results: string[] = [];
+		for (const [input, index] of [['click', 0], ['click', 0], ['press', 0], ['press', 1]] as const) {
+			const header = tabStackHeaderOf(group, index);
+			header.focus();
+			for (const type of input === 'press' ? [EventType.MOUSE_DOWN, EventType.MOUSE_UP, EventType.CLICK] : [EventType.CLICK]) {
+				header.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, button: 0 }));
+			}
+			await timeout(0);
+			results.push(`${input} ${index}: ${tabStackState(group)}, ${tabStackHeaderOf(group, index) === header ? 'same header' : 'new header'}, ${getActiveElement() === mainWindow.document.body ? 'focus lost' : 'focus kept'}, group focused ${groupFocus}`);
+		}
+
+		assert.deepStrictEqual(results, [
+			'click 0: 1 2a^ 3a^ 4b* 5, same header, focus kept, group focused 0',
+			'click 0: 1 2a 3a 4b* 5, same header, focus kept, group focused 0',
+			'press 0: 1 2a^ 3a^ 4b* 5, same header, focus kept, group focused 1',
+			'press 1: 1 2a^ 3a^ 4b^ 5*, same header, focus kept, group focused 2'
+		]);
 	});
 
 	/**
@@ -2982,9 +3417,10 @@ suite('EditorGroupsService', () => {
 	 * as the tree items of a tree view, or of the editor of the group with the
 	 * name from the Open Editors view, on the tabs of a group with file editors
 	 * for the editors of the fixture, near the left or right edge of what
-	 * {@link dropTargetOf} returns for the target.
+	 * {@link dropTargetOf} returns for the target. A registered drop handler
+	 * that takes the files, or their trust prompt, cancelled, can refuse it.
 	 */
-	type FileDropRow = readonly [fixture: string, names: string, target: string, side: 'left' | 'right', source?: 'explorer' | 'treeItem' | 'openEditors'];
+	type FileDropRow = readonly [fixture: string, names: string, target: string, side: 'left' | 'right', source?: 'explorer' | 'treeItem' | 'openEditors', refusal?: 'dropHandler' | 'trust'];
 
 	/**
 	 * Drops as the row says on the tabs of a new shown editor part with an
@@ -2992,7 +3428,7 @@ suite('EditorGroupsService', () => {
 	 * with the editors of the fixture, and describes the drop, the drop feedback
 	 * right before it, and the group afterwards.
 	 */
-	async function dropFileOnFixture([fixture, names, target, side, source = 'explorer']: FileDropRow, editorConfiguration?: object, prepareGroup?: (group: IEditorGroupView, instantiationService: TestInstantiationService) => Promise<void>): Promise<string> {
+	async function dropFileOnFixture([fixture, names, target, side, source = 'explorer', refusal]: FileDropRow, editorConfiguration?: object, prepareGroup?: (group: IEditorGroupView, instantiationService: TestInstantiationService) => Promise<void>): Promise<string> {
 		const [part, instantiationService] = await createShownPart(editorConfiguration);
 		const editorService = disposables.add(instantiationService.createInstance(EditorService, undefined));
 		instantiationService.stub(IEditorService, editorService);
@@ -3018,8 +3454,22 @@ suite('EditorGroupsService', () => {
 				: fillEditorsDragData(accessor, droppedNames.map(name => ({ resource: URI.file(name), isDirectory: false })), dragStart));
 		}
 
+		const refused = new DeferredPromise<void>();
+		const dropHandler = refusal === 'dropHandler' ? Registry.as<IDragAndDropContributionRegistry>(DragAndDropExtensions.DragAndDropContribution).registerDropHandler({
+			handleDrop: async () => {
+				refused.complete();
+				return true;
+			}
+		}) : undefined;
+		if (refusal === 'trust') {
+			instantiationService.createInstance(TestServiceAccessor).workspaceTrustRequestService.requestOpenUrisHandler = async () => {
+				refused.complete();
+				return WorkspaceTrustUriResponse.Cancel;
+			};
+		}
+
 		// The group opens the first dropped editor active and then the others after it
-		const opened = Promise.all([
+		const opened = refusal ? refused.p : Promise.all([
 			Event.toPromise(group.onDidActiveEditorChange),
 			Event.toPromise(Event.filter(group.onWillOpenEditor, e => editorName(e.editor) === droppedNames.at(-1)))
 		]);
@@ -3028,13 +3478,19 @@ suite('EditorGroupsService', () => {
 		const dropFeedback = tabBar(group);
 		dispatchDrags(dropTarget, [EventType.DROP], side, { dataTransfer });
 		await opened;
+		dropHandler?.dispose();
+
+		// A refused drop finishes right after it is refused
+		if (refusal) {
+			await timeout(0);
+		}
 
 		// The tab bar shows the editors that the group opens inactive once all of them opened
 		for (let tries = 0; tries < 10 && !hasTabOfEveryShownEditor(group); tries++) {
 			await timeout(0);
 		}
 
-		const drop = `${names}${source === 'treeItem' ? ' as a tree item' : ''} ${side} of ${target || 'the tabs'} [${dropFeedback}]: ${describeDrop(group)}`;
+		const drop = `${names}${source === 'treeItem' ? ' as a tree item' : ''} ${side} of ${target || 'the tabs'}${refusal === 'dropHandler' ? ', taken by a drop handler' : refusal === 'trust' ? ', with trust cancelled' : ''} [${dropFeedback}]: ${describeDrop(group)}`;
 
 		// The editor service opened the files as editors that only closing them disposes
 		await workbenchTeardown(instantiationService);
@@ -3503,6 +3959,8 @@ suite('EditorGroupsService', () => {
 			['1 2a 3a 4a 5', '4 3 2', '1', 'left'],
 			['1 2a 3a 4a 5', '2 9 3', '4', 'right'],
 			['1 2a^ 3a^ 4', '2 9 3', 'H0', 'right'],
+			['1s 2s 3a 4a 5', '2 3', '2', 'left'],
+			['1s 2 3a 4a 5', '1 2 4', '2', 'left'],
 		] as const) {
 			drops.push(await dropFileOnFixture(row));
 		}
@@ -3521,6 +3979,8 @@ suite('EditorGroupsService', () => {
 			'4 3 2 left of 1 [_ 1 H 2 3 4 5]: 4a* 3a 2a 1 5 [H 4 3 2 1 5]',
 			'2 9 3 right of 4 [1 H 2 3 4 _ 5]: 1 4a 2* 9 3 5 [1 H 4 2 9 3 5]',
 			'2 9 3 right of H0 [1 H^ _ 4]: 1 2* 9 3 4 [1 2 9 3 4]',
+			'2 3 left of 2 [1 _ 2 H 3 4 5]: 1s 2s* 3 4a 5 [1 2 3 H 4 5]',
+			'1 2 4 left of 2 [1 _ 2 H 3 4 5]: 1s* 2 4 3a 5 [1 2 4 H 3 5]',
 		]);
 	});
 
@@ -3590,6 +4050,11 @@ suite('EditorGroupsService', () => {
 			['1s 2s 3 4', '9 2', '3', 'left'],
 			['1s 2s 3a 4a', '9 2', 'H0', 'left'],
 			['1s 2 3a 4a', '9 1', 'H0', 'left'],
+			['1s 2a 3a 4', '2 1', 'H0', 'left'],
+			['1s 2a 3a 4', '1 3', 'H0', 'left'],
+			['1s 2a 3a 4', '1 2', 'H0', 'left'],
+			['1s 2s 3a 4a 5', '3 2', 'H0', 'left'],
+			['1s 2 3a 4a', '1 2 3', '2', 'left'],
 		] as const) {
 			drops.push(await dropFileOnFixture(row));
 		}
@@ -3604,6 +4069,59 @@ suite('EditorGroupsService', () => {
 			'9 2 left of 3 [1 2 _ 3 4]: 1s 9* 2 3 4 [1 9 2 3 4]',
 			'9 2 left of H0 [1 2 _ H 3 4]: 1s 9* 2 3a 4a [1 9 2 H 3 4]',
 			'9 1 left of H0 [1 2 _ H 3 4]: 2 9* 1 3a 4a [2 9 1 H 3 4]',
+			'2 1 left of H0 [1 _ H 2 3 4]: 2* 1 3a 4 [2 1 H 3 4]',
+			'1 3 left of H0 [1 _ H 2 3 4]: 1s* 3 2a 4 [1 3 H 2 4]',
+			'1 2 left of H0 [1 _ H 2 3 4]: 1s* 2 3a 4 [1 2 H 3 4]',
+			'3 2 left of H0 [1 2 _ H 3 4 5]: 1s 3* 2 4a 5 [1 3 2 H 4 5]',
+			'1 2 3 left of 2 [1 _ 2 H 3 4]: 1s* 2 3 4a [1 2 3 H 4]',
+		]);
+	});
+
+	test('tab stacks - files dropped from the Explorer that a registered drop handler takes, or files and tree items whose trust is cancelled, move, unpin and ungroup no editor, also with tab stacks disabled', async () => {
+		disposables.add(registerTestFileEditor());
+
+		const drops = [];
+		for (const [row, enableTabStacks] of [
+			[['1 2a 3a 4', '2', '4', 'left', 'explorer', 'dropHandler'], true],
+			[['1 2a 3a 4', '2', '4', 'left', 'explorer', 'trust'], true],
+			[['1 2a 3a 4', '2', '4', 'left', 'treeItem', 'trust'], true],
+			[['1s 2s 3 4', '9 2', '3', 'left', 'explorer', 'dropHandler'], false],
+			[['1s 2s 3 4', '9 2', '3', 'left', 'treeItem', 'trust'], false],
+		] as const) {
+			drops.push(await dropFileOnFixture(row, { enableTabStacks }));
+		}
+
+		assert.deepStrictEqual(drops, [
+			'2 left of 4, taken by a drop handler [1 H 2 3 _ 4]: 1 2a 3a 4* [1 H 2 3 4]',
+			'2 left of 4, with trust cancelled [1 H 2 3 _ 4]: 1 2a 3a 4* [1 H 2 3 4]',
+			'2 as a tree item left of 4, with trust cancelled [1 H 2 3 _ 4]: 1 2a 3a 4* [1 H 2 3 4]',
+			'9 2 left of 3, taken by a drop handler [1 2 _ 3 4]: 1s 2s 3 4* [1 2 3 4]',
+			'9 2 as a tree item left of 3, with trust cancelled [1 2 _ 3 4]: 1s 2s 3 4* [1 2 3 4]',
+		]);
+	});
+
+	test('tab stacks - files dropped on the tabs land where the drop feedback showed, also when an editor closes while the drop waits for trust, and with tab stacks disabled', async () => {
+		disposables.add(registerTestFileEditor());
+
+		// The trust prompt closes the first editor
+		const closeFirstEditorOnTrustPrompt = async (group: IEditorGroupView, instantiationService: TestInstantiationService) => {
+			const editor = editorOf(group, '1');
+			instantiationService.createInstance(TestServiceAccessor).workspaceTrustRequestService.requestOpenUrisHandler = async () => {
+				await group.closeEditor(editor);
+				return WorkspaceTrustUriResponse.Open;
+			};
+		};
+
+		const drops = [
+			await dropFileOnFixture(['1 2a 3a 4', '2', '4', 'left'], undefined, closeFirstEditorOnTrustPrompt),
+			await dropFileOnFixture(['1 2a 3a 4', '2', '4', 'left', 'treeItem'], undefined, closeFirstEditorOnTrustPrompt),
+			await dropFileOnFixture(['1 2 3 4', '9', '3', 'left'], { enableTabStacks: false }, closeFirstEditorOnTrustPrompt),
+		];
+
+		assert.deepStrictEqual(drops, [
+			'2 left of 4 [1 H 2 3 _ 4]: 3a 2* 4 [H 3 2 4]',
+			'2 as a tree item left of 4 [1 H 2 3 _ 4]: 3a 2* 4 [H 3 2 4]',
+			'9 left of 3 [1 2 _ 3 4]: 2 9* 3 4 [2 9 3 4]',
 		]);
 	});
 

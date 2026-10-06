@@ -13,16 +13,14 @@ import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
-import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
-import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { IInputOptions, IQuickInputService } from '../../../../../platform/quickinput/common/quickInput.js';
-import { TabStackEditorFocus } from '../../../../browser/parts/editor/editor.js';
 import { TabStackEditor } from '../../../../browser/parts/editor/tabStackEditor.js';
 import { EditorsOrder } from '../../../../common/editor.js';
 import { EditorGroupModel, TabStackColor, TabStackId } from '../../../../common/editor/editorGroupModel.js';
+import { TabStackEditorFocus } from '../../../../services/editor/common/editorGroupsService.js';
 import { getShownTabStackEditor, TestFileEditorInput, workbenchInstantiationService } from '../../workbenchTestServices.js';
 
 suite('TabStackEditor', () => {
@@ -36,9 +34,8 @@ suite('TabStackEditor', () => {
 	setup(() => {
 		disposables = new DisposableStore();
 		instantiationService = workbenchInstantiationService(undefined, disposables);
-		(instantiationService.get(IConfigurationService) as TestConfigurationService).setUserConfiguration('workbench', { editor: { enableTabStacks: true } });
-
 		model = disposables.add(instantiationService.createInstance(EditorGroupModel, undefined));
+		model.setTabStacksEnabled(true);
 		for (const name of ['a', 'b', 'c']) {
 			model.openEditor(disposables.add(new TestFileEditorInput(URI.file(`/path/${name}`), 'testEditorInput')), { pinned: true, active: true, index: model.count });
 		}

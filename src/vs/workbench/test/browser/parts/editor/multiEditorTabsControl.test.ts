@@ -14,8 +14,12 @@ import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { TreeViewsDnDService } from '../../../../../editor/common/services/treeViewsDnd.js';
 import { ITreeViewsDnDService } from '../../../../../editor/common/services/treeViewsDndService.js';
-import { IMenu, IMenuService, MenuId, MenuItemAction } from '../../../../../platform/actions/common/actions.js';
-import { DEFAULT_EDITOR_PART_OPTIONS, EditorTabStackContextMenuId, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView } from '../../../../browser/parts/editor/editor.js';
+import { IMenu, IMenuService, isIMenuItem, isISubmenuItem, MenuId, MenuItemAction, MenuRegistry } from '../../../../../platform/actions/common/actions.js';
+import { ICommandActionTitle } from '../../../../../platform/action/common/action.js';
+import { ContextKeyExpression, ContextKeyValue } from '../../../../../platform/contextkey/common/contextkey.js';
+import { DEFAULT_EDITOR_PART_OPTIONS, EditorTabStackContextMenuId, EditorTabStackSubmenuId, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView } from '../../../../browser/parts/editor/editor.js';
+import { registerTabStackSubmenu } from '../../../../browser/parts/editor/editorCommands.js';
+import { ActiveEditorInTabStackContext, ActiveEditorStickyContext, EditorGroupHasTabStacksContext, EditorTabsVisibleContext } from '../../../../common/contextkeys.js';
 import { MultiEditorTabsControl } from '../../../../browser/parts/editor/multiEditorTabsControl.js';
 import { MultiRowEditorControl } from '../../../../browser/parts/editor/multiRowEditorTabsControl.js';
 import { EditorInputCapabilities, EditorsOrder, IEditorPartOptions } from '../../../../common/editor.js';
@@ -37,6 +41,8 @@ import { LocalSelectionTransfer } from '../../../../../platform/dnd/browser/dnd.
 import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier } from '../../../../browser/dnd.js';
 import { DataTransfers } from '../../../../../base/browser/dnd.js';
 import { isFirefox } from '../../../../../base/browser/browser.js';
+import { IAccessibilityService } from '../../../../../platform/accessibility/common/accessibility.js';
+import { TestAccessibilityService } from '../../../../../platform/accessibility/test/common/testAccessibilityService.js';
 import '../../../../contrib/modernUI/browser/media/tabs.css';
 import '../../../../contrib/modernUI/browser/connectedEditorTabs.js';
 
@@ -247,6 +253,7 @@ suite('MultiEditorTabsControl', () => {
 
 		partOptions = { ...partOptions, enableTabStacks: true, ...options };
 		model = disposables.add(instantiationService.createInstance(EditorGroupModel, undefined));
+		model.setTabStacksEnabled(true);
 		const editors = names.map(name => disposables.add(new TestFileEditorInput(URI.file(`/path/${name}`), 'testEditorInput')));
 		editors.forEach((editor, index) => model.openEditor(editor, { pinned: true, active: index === 0, index }));
 		control = createControl(menuIds);
@@ -388,6 +395,24 @@ suite('MultiEditorTabsControl', () => {
 
 	async function nextAnimationFrame(): Promise<void> {
 		await new Promise<void>(resolve => disposables.add(scheduleAtNextAnimationFrame(mainWindow, () => resolve())));
+	}
+
+	/**
+	 * Counts the reads of the properties of the element, which still return what the element has.
+	 */
+	function countReads(element: HTMLElement, properties: readonly ('firstElementChild' | 'offsetWidth' | 'scrollWidth')[]): { count: number } {
+		const reads = { count: 0 };
+		for (const property of properties) {
+			Object.defineProperty(element, property, {
+				configurable: true,
+				get: () => {
+					reads.count++;
+					return Reflect.get(HTMLElement.prototype, property, element);
+				}
+			});
+		}
+
+		return reads;
 	}
 
 	/**
@@ -2009,6 +2034,28 @@ suite('MultiEditorTabsControl', () => {
 		});
 	});
 
+	test('does not walk the tabs container to put tab stack headers in place while no tab stack shows and no header is left', () => {
+		const [a, b, c] = createTabStacksGroup(['a', 'b', 'c']);
+		const walks = countReads(tabsChild(''), ['firstElementChild']);
+
+		control.updateTabStacks();
+		model.moveEditor(a, 2);
+		control.moveEditor(a, 0, 2);
+		const withoutTabStacks = walks.count;
+
+		addTabStack([b, c]);
+		model.removeEditorsFromTabStack([b, c]);
+		control.updateTabStacks();
+		walks.count = 0;
+		control.updateTabStacks();
+
+		assert.deepStrictEqual({ withoutTabStacks, onceTheHeaderIsGone: walks.count, tabs: strip() }, {
+			withoutTabStacks: 0,
+			onceTheHeaderIsGone: 0,
+			tabs: ['T:b', 'T:c', 'T:a'],
+		});
+	});
+
 	test('renders a header before the first tab of each tab stack and keeps the Add Tab control last', () => {
 		const [, b, c, , e] = createTabStacksGroup(['a', 'b', 'c', 'd', 'e'], undefined, { tabsBarAddTab: MenuId.for('test.tabStacks.addTab') });
 
@@ -2320,6 +2367,65 @@ suite('MultiEditorTabsControl', () => {
 			{ role: 'tab', selected: 'false', expanded: 'true', label: 'unnamed tab stack, 2 editors', hover: 'Unnamed tab stack (2 editors)', tabIndex: -1, unnamed: true },
 			{ role: 'tab', selected: 'false', expanded: 'true', label: 'unnamed tab stack, 1 editor', hover: 'Unnamed tab stack (1 editor)', tabIndex: -1, unnamed: true },
 		]);
+	});
+
+	test('clicking a tab stack header announces that its tab stack collapsed or expanded while a screen reader is in use, and nothing when the tab stack stays expanded', () => {
+		const announcements: string[] = [];
+		let screenReaderOptimized = true;
+		// The screen reader is the boundary: it speaks what the tab bar announces
+		instantiationService.stub(IAccessibilityService, new class extends TestAccessibilityService {
+			override isScreenReaderOptimized(): boolean { return screenReaderOptimized; }
+			override status(message: string): void { announcements.push(message); }
+		});
+		const click = (header: HTMLElement) => header.dispatchEvent(new MouseEvent(EventType.CLICK, { bubbles: true, cancelable: true, button: 0 }));
+
+		const [, b, c] = createTabStacksGroup(['a', 'b', 'c']);
+		addTabStack([b], { label: 'Auth' });
+		addTabStack([c]);
+		const [auth, unnamed] = tabStackHeaders();
+		click(auth);
+		click(auth);
+		click(unnamed);
+		screenReaderOptimized = false;
+		click(unnamed);
+		screenReaderOptimized = true;
+
+		// Collapsing would hide the only editor, so the tab stack stays expanded
+		const [only] = createTabStacksGroup(['only']);
+		addTabStack([only], { label: 'Solo' });
+		click(tabStackHeaders()[0]);
+
+		assert.deepStrictEqual(announcements, [
+			'Collapsed tab stack Auth',
+			'Expanded tab stack Auth',
+			'Collapsed unnamed tab stack',
+		]);
+	});
+
+	test('the accessible names of a tab stack header and of the tabs of its tab stack follow a rename and the editors that join or close', () => {
+		const [, b, c, d] = createTabStacksGroup(['a', 'b', 'c', 'd']);
+		const tabStack = addTabStack([b, c], { label: 'Auth' });
+		const names = () => ({
+			header: tabStackHeaders()[0].getAttribute('aria-label'),
+			tabs: tabAriaLabels().map(label => /, in tab stack (?<tabStack>\w+)$/.exec(label ?? '')?.groups?.tabStack ?? '-')
+		});
+
+		const initially = names();
+		model.updateTabStack(tabStack, { label: 'Docs' });
+		control.updateTabStacks();
+		const afterRename = names();
+		model.addEditorsToTabStack([d], tabStack);
+		control.updateTabStacks();
+		const afterJoin = names();
+		model.closeEditor(c);
+		control.closeEditor(c);
+
+		assert.deepStrictEqual({ initially, afterRename, afterJoin, afterClose: names() }, {
+			initially: { header: 'tab stack Auth, 2 editors', tabs: ['-', 'Auth', 'Auth', '-'] },
+			afterRename: { header: 'tab stack Docs, 2 editors', tabs: ['-', 'Docs', 'Docs', '-'] },
+			afterJoin: { header: 'tab stack Docs, 3 editors', tabs: ['-', 'Docs', 'Docs', 'Docs'] },
+			afterClose: { header: 'tab stack Docs, 2 editors', tabs: ['-', 'Docs', 'Docs'] },
+		});
 	});
 
 	test('tabs name their tab stack in their aria label by editor when pinned tabs are on a separate row', () => {
@@ -2716,6 +2822,48 @@ suite('MultiEditorTabsControl', () => {
 		assert.deepStrictEqual(menus, [EditorTabStackContextMenuId.id]);
 	});
 
+	test('the context menu of a tab gathers the tab stack commands in a Tab Stack submenu after Pin, shown for a tab that is not pinned while tab stacks are enabled', () => {
+		const itemsBefore = new Set([...MenuRegistry.getMenuItems(MenuId.EditorTitleContext), ...MenuRegistry.getMenuItems(EditorTabStackSubmenuId)]);
+		disposables.add(registerTabStackSubmenu());
+		const registeredItems = (menu: MenuId) => MenuRegistry.getMenuItems(menu).filter(item => !itemsBefore.has(item));
+		const enabled: Record<string, ContextKeyValue> = { 'config.workbench.editor.enableTabStacks': true, [EditorTabsVisibleContext.key]: true };
+		const isShown = (when: ContextKeyExpression | undefined, keys: Record<string, ContextKeyValue>) => when?.evaluate({ getValue: <T extends ContextKeyValue = ContextKeyValue>(key: string) => keys[key] as T | undefined }) ?? true;
+		const title = (value: string | ICommandActionTitle) => typeof value === 'string' ? value : value.value;
+
+		assert.deepStrictEqual({
+			tabContextMenu: registeredItems(MenuId.EditorTitleContext).map(item => ({
+				item: isISubmenuItem(item) ? `submenu ${item.submenu.id}: ${title(item.title)}` : `command ${item.command.id}: ${title(item.command.title)}`,
+				group: item.group,
+				order: item.order,
+				shownFor: {
+					tab: isShown(item.when, enabled),
+					pinnedTab: isShown(item.when, { ...enabled, [ActiveEditorStickyContext.key]: true }),
+					tabStacksDisabled: isShown(item.when, { ...enabled, 'config.workbench.editor.enableTabStacks': false }),
+					tabsNotShownAsMultiple: isShown(item.when, { ...enabled, [EditorTabsVisibleContext.key]: false }),
+				},
+			})),
+			tabStackSubmenu: registeredItems(EditorTabStackSubmenuId).filter(isIMenuItem).map(item => ({
+				item: `command ${item.command.id}: ${title(item.command.title)}`,
+				group: item.group,
+				order: item.order,
+				shownFor: {
+					tab: isShown(item.when, enabled),
+					tabOfGroupWithTabStacks: isShown(item.when, { ...enabled, [EditorGroupHasTabStacksContext.key]: true }),
+					tabInTabStack: isShown(item.when, { ...enabled, [EditorGroupHasTabStacksContext.key]: true, [ActiveEditorInTabStackContext.key]: true }),
+				},
+			})),
+		}, {
+			tabContextMenu: [
+				{ item: 'submenu EditorTabStackSubmenu: Tab Stack', group: '3_preview', order: 30, shownFor: { tab: true, pinnedTab: false, tabStacksDisabled: false, tabsNotShownAsMultiple: false } },
+			],
+			tabStackSubmenu: [
+				{ item: 'command workbench.action.addEditorToNewTabStack: Add to New Tab Stack', group: '1_tabStack', order: 10, shownFor: { tab: true, tabOfGroupWithTabStacks: true, tabInTabStack: true } },
+				{ item: 'command workbench.action.addEditorToTabStack: Add to Tab Stack...', group: '1_tabStack', order: 20, shownFor: { tab: false, tabOfGroupWithTabStacks: true, tabInTabStack: true } },
+				{ item: 'command workbench.action.removeEditorFromTabStack: Remove from Tab Stack', group: '1_tabStack', order: 30, shownFor: { tab: false, tabOfGroupWithTabStacks: false, tabInTabStack: true } },
+			],
+		});
+	});
+
 	test('with tab stacks disabled, a drag over the tabs shows the drop between the tabs next to it, and a drag of files enters as a copy while one of tabs leaves the effect to the browser', async () => {
 		const group = classicGroup();
 		const [a, b, c, d] = createTabStacksGroup(['a', 'b', 'c', 'd'], { enableTabStacks: false });
@@ -3002,8 +3150,9 @@ suite('MultiEditorTabsControl', () => {
 		await layoutConnectedGroup(group, 300);
 		dragEditors([editors[1]]);
 
-		// While a drag is near the end of the tabs, the browser scrolls them to their end
+		// While a drag stays near the end of the tabs, the browser scrolls them to their end a while after the drag enters
 		dispatchDrag(EventType.DRAG_ENTER, 'T:f*', 'right');
+		await nextAnimationFrame();
 		const tabsContainer = tabsChild('');
 		tabsContainer.scrollLeft = tabsContainer.scrollWidth;
 		await nextAnimationFrame();
@@ -3019,7 +3168,7 @@ suite('MultiEditorTabsControl', () => {
 		assert.deepStrictEqual(dropFeedback(), 'T:f* | ∅');
 	});
 
-	test('a drag of tabs over tabs that overflow, end with a tab stack and are scrolled to their end scrolls them on to show the empty space after the tab stack', async () => {
+	test('a drag of tabs over tabs that overflow, end with a tab stack and are scrolled to their end scrolls them on in the next frame to show the empty space after the tab stack, without measuring them when the drag enters', async () => {
 		const group = classicGroup();
 		const editors = createTabStacksGroup(['a', 'b', 'c', 'd', 'e', 'f']);
 		addTabStack(editors.slice(4), { label: 'S' });
@@ -3031,9 +3180,12 @@ suite('MultiEditorTabsControl', () => {
 		const viewport = container.querySelector<HTMLElement>('.monaco-scrollable-element')!.getBoundingClientRect();
 		const spaceAfterLastTab = () => Math.round(viewport.right) - Math.round(tabsChild('T:f*').getBoundingClientRect().right);
 		const before = spaceAfterLastTab();
+		const widthReads = countReads(tabsChild(''), ['offsetWidth', 'scrollWidth']);
 		dispatchDrag(EventType.DRAG_ENTER, 'T:f*', 'right');
+		const widthReadsOnDragEnter = widthReads.count;
+		await nextAnimationFrame();
 
-		assert.deepStrictEqual({ before, during: spaceAfterLastTab() }, { before: 0, during: 28 });
+		assert.deepStrictEqual({ before, widthReadsOnDragEnter, during: spaceAfterLastTab() }, { before: 0, widthReadsOnDragEnter: 0, during: 28 });
 	});
 
 	test('after a drop on a tab from outside of the tabs, such as from another group, the next drag of tabs that leaves the tabs takes its drop feedback and the empty space after a tab stack that ends the tabs with it', async () => {
@@ -3065,6 +3217,47 @@ suite('MultiEditorTabsControl', () => {
 
 		dragEditors([a]);
 		dispatchDrag(EventType.DRAG_ENTER, 'T:a', 'left');
+
+		assert.deepStrictEqual({
+			wrapping: container.querySelector('.tabs-and-actions-container')!.classList.contains('wrapping'),
+			dropSpace: tabsChild('').classList.contains('tab-stack-drop-space'),
+		}, {
+			wrapping: false,
+			dropSpace: true,
+		});
+	});
+
+	test('a drag of tabs over tabs that can wrap and nearly fill their row adds the empty space after a tab stack that ends the tabs without wrapping them', async () => {
+		const group = classicGroup();
+		const [a, b, c] = createTabStacksGroup(['a', 'b', 'c'], { wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, editorActionsLocation: 'hidden' });
+		addTabStack([b, c], { label: 'S' });
+		await layoutConnectedGroup(group, 900);
+		await layoutConnectedGroup(group, Math.ceil(tabsChild('T:c*').getBoundingClientRect().right - tabsChild('').getBoundingClientRect().left) + 10);
+
+		dragEditors([a]);
+		dispatchDrag(EventType.DRAG_ENTER, 'T:a', 'left');
+		await nextAnimationFrame();
+
+		assert.deepStrictEqual({
+			wrapping: container.querySelector('.tabs-and-actions-container')!.classList.contains('wrapping'),
+			dropSpace: tabsChild('').classList.contains('tab-stack-drop-space'),
+		}, {
+			wrapping: false,
+			dropSpace: true,
+		});
+	});
+
+	test('a layout during a drag of tabs over tabs that can wrap and nearly fill their row, as when the drag opens the tab it rests on, keeps them on one row with the empty space after a tab stack that ends the tabs', async () => {
+		const group = classicGroup();
+		const [a, b, c] = createTabStacksGroup(['a', 'b', 'c'], { wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, editorActionsLocation: 'hidden' });
+		addTabStack([b, c], { label: 'S' });
+		await layoutConnectedGroup(group, 900);
+		const width = Math.ceil(tabsChild('T:c*').getBoundingClientRect().right - tabsChild('').getBoundingClientRect().left) + 10;
+		await layoutConnectedGroup(group, width);
+
+		dragEditors([a]);
+		dispatchDrag(EventType.DRAG_ENTER, 'T:a', 'left');
+		await layoutConnectedGroup(group, width);
 
 		assert.deepStrictEqual({
 			wrapping: container.querySelector('.tabs-and-actions-container')!.classList.contains('wrapping'),

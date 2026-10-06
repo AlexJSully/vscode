@@ -7,7 +7,7 @@ import './media/editortitlecontrol.css';
 import { Dimension, clearNode } from '../../../../base/browser/dom.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IThemeService, Themable } from '../../../../platform/theme/common/themeService.js';
-import { IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupTitleHeight, IEditorGroupView, IEditorGroupViewOptions, IEditorPartsView, IInternalEditorOpenOptions, TabStackEditorFocus } from './editor.js';
+import { IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupTitleHeight, IEditorGroupView, IEditorGroupViewOptions, IEditorPartsView, IInternalEditorOpenOptions } from './editor.js';
 import { IEditorTabsControl } from './editorTabsControl.js';
 import { MultiEditorTabsControl } from './multiEditorTabsControl.js';
 import { SingleEditorTabsControl } from './singleEditorTabsControl.js';
@@ -17,6 +17,7 @@ import { DisposableStore, MutableDisposable } from '../../../../base/common/life
 import { MultiRowEditorControl } from './multiRowEditorTabsControl.js';
 import { IReadonlyEditorGroupModel, TabStackId } from '../../../common/editor/editorGroupModel.js';
 import { NoEditorTabsControl } from './noEditorTabsControl.js';
+import { TabStackEditorFocus } from '../../../services/editor/common/editorGroupsService.js';
 import { EditorHeaderControl } from './editorHeaderControl.js';
 
 export interface IEditorTitleControlDimensions {
@@ -147,16 +148,10 @@ export class EditorTitleControl extends Themable {
 		this.editorTabsControl.updateEditorSelections();
 	}
 
-	/**
-	 * Forwards to {@link IEditorTabsControl.updateTabStacks} of the current tabs control.
-	 */
 	updateTabStacks(): void {
 		this.editorTabsControl.updateTabStacks();
 	}
 
-	/**
-	 * Forwards to {@link IEditorTabsControl.editTabStack} of the current tabs control.
-	 */
 	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean {
 		return this.editorTabsControl.editTabStack(tabStack, focus);
 	}

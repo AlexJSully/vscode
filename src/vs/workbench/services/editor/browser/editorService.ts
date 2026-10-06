@@ -24,6 +24,7 @@ import { isCodeEditor, isDiffEditor, ICodeEditor, IDiffEditor, isCompositeEditor
 import { IEditorGroupView, EditorServiceImpl } from '../../../browser/parts/editor/editor.js';
 import { registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
 import { isUndefined } from '../../../../base/common/types.js';
+import { onUnexpectedError } from '../../../../base/common/errors.js';
 import { EditorsObserver } from '../../../browser/parts/editor/editorsObserver.js';
 import { Promises, timeout } from '../../../../base/common/async.js';
 import { IWorkspaceContextService } from '../../../../platform/workspace/common/workspace.js';
@@ -672,9 +673,15 @@ export class EditorService extends Disposable implements EditorServiceImpl {
 		}
 
 		// Open in target groups
+		let beforeOpenOptions: IEditorOptions | undefined;
+		try {
+			beforeOpenOptions = mapGroupToTypedEditors.size > 0 ? options?.beforeOpen?.() : undefined;
+		} catch (error) {
+			onUnexpectedError(error);
+		}
 		const result: Promise<IEditorPane | undefined>[] = [];
 		for (const [group, editors] of mapGroupToTypedEditors) {
-			result.push(group.openEditors(editors));
+			result.push(group.openEditors(beforeOpenOptions ? editors.map(editor => ({ ...editor, options: { ...editor.options, ...beforeOpenOptions } })) : editors));
 		}
 
 		return coalesce(await Promises.settled(result));

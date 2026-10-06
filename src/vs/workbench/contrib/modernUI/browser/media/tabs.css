@@ -134,8 +134,7 @@
 	right: var(--vscode-spacing-size20);
 }
 
-/* The active pill of a tab stack also has an outline in the color of its tab stack, inside
- * the border that high contrast draws around the pill. */
+/* The active pill of a tab stack also has an outline in its color, inside the high contrast border */
 .modern-ui-tabs.monaco-workbench:not(.modern-ui-connected-editor-tabs) .part.editor > .content .editor-group-container > .title .tabs-container > .tab.active.tab-stack-member > .tab-fill {
 	outline: var(--vscode-strokeThickness) solid var(--tab-stack-color);
 	outline-offset: calc(-1 * var(--vscode-strokeThickness));
@@ -612,7 +611,7 @@
 .modern-ui-tabs .part.editor .tabs-and-actions-container > .monaco-scrollable-element > .sticky-tabs-background {
 	position: absolute;
 	top: 0;
-	bottom: 0; /* cover the whole tab bar height: the top gutter pushes each pill, and the tab stack indicator along its bottom edge, below one tab height */
+	bottom: 0; /* cover the whole tab bar height, as the top gutter pushes each pill below one tab height */
 	left: 0;
 	z-index: 7;
 	width: 0;
@@ -642,8 +641,7 @@
 	pointer-events: none;
 }
 
-/* The tab or header after a drop shows it in the gap, so the one before it only shows a drop at the
- * end of a row or after the last tab or header, also when the Add Tab control follows them. */
+/* The slot after a drop shows it, so the slot before shows it only at the end of a row or of the tabs */
 .modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-left:not(.last-in-row):not(.drop-target-last)::after {
 	display: none;
 }

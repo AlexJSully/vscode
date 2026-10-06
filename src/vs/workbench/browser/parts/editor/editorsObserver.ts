@@ -376,9 +376,7 @@ export class EditorsObserver extends Disposable {
 				return false; // never the editor that should be excluded
 			}
 
-			// Editors hidden in a collapsed tab stack cannot become active, so they
-			// drift to the least recently used end. When they alone reach the
-			// limit, every open closes the previous editor.
+			// Hidden editors drift to the least recently used end, where each open would close one of them
 			const group = this.editorGroupsContainer.getGroup(groupId);
 			if (group?.isSticky(editor) || group?.getTabStack(editor)?.collapsed) {
 				return false; // never sticky editors or editors hidden in a collapsed tab stack

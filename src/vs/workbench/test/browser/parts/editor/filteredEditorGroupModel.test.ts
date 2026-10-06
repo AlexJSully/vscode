@@ -34,7 +34,7 @@ suite('FilteredEditorGroupModel', () => {
 		testInstService = undefined;
 	});
 
-	function inst(editorConfiguration: object = {}): IInstantiationService {
+	function inst(): IInstantiationService {
 		if (!testInstService) {
 			testInstService = new TestInstantiationService();
 		}
@@ -45,14 +45,14 @@ suite('FilteredEditorGroupModel', () => {
 		inst.stub(ITelemetryService, NullTelemetryService);
 
 		const config = new TestConfigurationService();
-		config.setUserConfiguration('workbench', { editor: { openPositioning: 'right', focusRecentEditorAfterClose: true, ...editorConfiguration } });
+		config.setUserConfiguration('workbench', { editor: { openPositioning: 'right', focusRecentEditorAfterClose: true } });
 		inst.stub(IConfigurationService, config);
 
 		return inst;
 	}
 
-	function createEditorGroupModel(serialized?: ISerializedEditorGroupModel, editorConfiguration?: object): EditorGroupModel {
-		const group = disposables.add(inst(editorConfiguration).createInstance(EditorGroupModel, serialized));
+	function createEditorGroupModel(serialized?: ISerializedEditorGroupModel): EditorGroupModel {
+		const group = disposables.add(inst().createInstance(EditorGroupModel, serialized));
 
 		disposables.add(toDisposable(() => {
 			for (const editor of group.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE)) {
@@ -813,7 +813,8 @@ suite('FilteredEditorGroupModel', () => {
 	});
 
 	test('Sticky/Unsticky getTabStack()', () => {
-		const model = createEditorGroupModel(undefined, { enableTabStacks: true });
+		const model = createEditorGroupModel();
+		model.setTabStacksEnabled(true);
 
 		const stickyFilteredEditorGroup = disposables.add(new StickyEditorGroupModel(model));
 		const unstickyFilteredEditorGroup = disposables.add(new UnstickyEditorGroupModel(model));
@@ -837,7 +838,8 @@ suite('FilteredEditorGroupModel', () => {
 	});
 
 	test('Sticky/Unsticky forward TAB_STACKS', () => {
-		const model = createEditorGroupModel(undefined, { enableTabStacks: true });
+		const model = createEditorGroupModel();
+		model.setTabStacksEnabled(true);
 
 		const stickyFilteredEditorGroup = disposables.add(new StickyEditorGroupModel(model));
 		const unstickyFilteredEditorGroup = disposables.add(new UnstickyEditorGroupModel(model));

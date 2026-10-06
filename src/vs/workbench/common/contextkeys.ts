@@ -84,8 +84,7 @@ export const ActiveEditorCanToggleReadonlyContext = new RawContextKey<boolean>('
 export const ActiveEditorCanRevertContext = new RawContextKey<boolean>('activeEditorCanRevert', false, localize('activeEditorCanRevert', "Whether the active editor can revert"));
 export const ActiveEditorCanSplitInGroupContext = new RawContextKey<boolean>('activeEditorCanSplitInGroup', true);
 export const ActiveEditorCannotCloseContext = new RawContextKey<boolean>('activeEditorCannotClose', false, localize('activeEditorCannotClose', "Whether the active editor cannot be closed through standard user actions"));
-/** Whether the active editor, or the editor of the tab whose context menu shows, is in a tab stack. */
-export const ActiveEditorInTabStackContext = new RawContextKey<boolean>('activeEditorIsInTabStack', false, localize('activeEditorIsInTabStack', "Whether the active editor is in a tab stack"));
+export const ActiveEditorInTabStackContext = new RawContextKey<boolean>('activeEditorIsInTabStack', false, localize('activeEditorIsInTabStack', "Whether the active editor is in a tab stack of its group"));
 
 // Editor Kind Context Keys
 export const ActiveEditorContext = new RawContextKey<string | null>('activeEditor', null, { type: 'string', description: localize('activeEditor', "The identifier of the active editor") });
@@ -108,8 +107,8 @@ export const SingleEditorGroupsContext = MultipleEditorGroupsContext.toNegated()
 export const MultipleEditorsSelectedInGroupContext = new RawContextKey<boolean>('multipleEditorsSelectedInGroup', false, localize('multipleEditorsSelectedInGroup', "Whether multiple editors have been selected in an editor group"));
 export const TwoEditorsSelectedInGroupContext = new RawContextKey<boolean>('twoEditorsSelectedInGroup', false, localize('twoEditorsSelectedInGroup', "Whether exactly two editors have been selected in an editor group"));
 export const SelectedEditorsInGroupFileOrUntitledResourceContextKey = new RawContextKey<boolean>('SelectedEditorsInGroupFileOrUntitledResourceContextKey', true, localize('SelectedEditorsInGroupFileOrUntitledResourceContextKey', "Whether all selected editors in a group have a file or untitled resource associated"));
-/** Whether the editor group has at least one tab stack. Only set on the context key service of the group. */
-export const EditorGroupHasTabStacksContext = new RawContextKey<boolean>('editorGroupHasTabStacks', false, localize('editorGroupHasTabStacks', "Whether the editor group has tab stacks"));
+export const EditorGroupHasTabStacksContext = new RawContextKey<boolean>('editorGroupHasTabStacks', false, localize('editorGroupHasTabStacks', "Whether an editor group has tab stacks"));
+export const ActiveEditorGroupHasCollapsedTabStacksContext = new RawContextKey<boolean>('activeEditorGroupHasCollapsedTabStacks', false, localize('activeEditorGroupHasCollapsedTabStacks', "Whether the active editor group has collapsed tab stacks"));
 
 // Editor Part Context Keys
 export const EditorPartMultipleEditorGroupsContext = new RawContextKey<boolean>('editorPartMultipleEditorGroups', false, localize('editorPartMultipleEditorGroups', "Whether there are multiple editor groups opened in an editor part"));
@@ -131,10 +130,6 @@ export const SplitEditorsVertically = new RawContextKey<boolean>('splitEditorsVe
 export const MainEditorAreaVisibleContext = new RawContextKey<boolean>('mainEditorAreaVisible', true, localize('mainEditorAreaVisible', "Whether the editor area in the main window is visible"));
 export const EditorTabsVisibleContext = new RawContextKey<boolean>('editorTabsVisible', true, localize('editorTabsVisible', "Whether editor tabs are visible"));
 
-/**
- * Whether editors can be gathered into tab stacks: the setting is on and the
- * editor tabs are visible.
- */
 export const TabStacksEnabledContext = ContextKeyExpr.and(
 	ContextKeyExpr.has('config.workbench.editor.enableTabStacks'),
 	EditorTabsVisibleContext

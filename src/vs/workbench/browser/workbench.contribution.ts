@@ -287,7 +287,7 @@ const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Con
 				'type': 'boolean',
 				'default': false,
 				tags: ['experimental'],
-				'markdownDescription': localize({ comment: ['{0}, {1} will be a setting name rendered as a link'], key: 'workbench.editor.enableTabStacks' }, "When enabled, tabs can be gathered into tab stacks: named, colored groups of adjacent tabs that can be collapsed and dragged together. Create a tab stack from the context menu of a tab or from the Command Palette. Pinned tabs cannot be in a tab stack. Tab stacks are only shown, and their commands only work, while {0} is set to {1}; existing tab stacks are kept while it is not. Turning this setting off removes all tab stacks, and their editors stay open.", '`#workbench.editor.showTabs#`', '`multiple`'),
+				'markdownDescription': localize({ comment: ['{0}, {1} will be a setting name rendered as a link'], key: 'workbench.editor.enableTabStacks' }, "When enabled, tabs can be gathered into tab stacks: named, colored groups of adjacent tabs that can be collapsed and dragged together. Pinned tabs cannot be in a tab stack. Tab stacks only apply while {0} is set to {1}; otherwise, and while this setting is off, they are hidden and kept.", '`#workbench.editor.showTabs#`', '`multiple`'),
 			},
 			'workbench.editor.preventPinnedEditorClose': {
 				'type': 'string',

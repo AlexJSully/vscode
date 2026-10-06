@@ -944,6 +944,7 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 		const targetView = this.assertGroupView(target);
 
 		// Collect editors to move/copy
+		let tabStacks = sourceView.getTabStackRecords();
 		const editors: EditorInputWithOptions[] = [];
 		let index = (options && typeof options.index === 'number') ? getIndexPastTabStack(targetView, options.index) : targetView.count;
 		for (const editor of sourceView.editors) {
@@ -957,6 +958,8 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 					// when the editor is moved.
 					// See https://github.com/microsoft/vscode/issues/239549
 					targetView.isSticky(editor) ||
+					// Same for editors in a tab stack of the target
+					!!targetView.getTabStack(targetView.getEditorByIndex(targetView.getIndexOfEditor(editor))!) ||
 					// Do not configure an `index` when we are explicitly instructed
 					options?.preserveExistingIndex
 				)
@@ -980,9 +983,15 @@ export class EditorPart extends Part<IEditorPartMemento> implements IEditorPart,
 		// Move/Copy editors over into target
 		let result = true;
 		if (options?.mode === MergeGroupMode.COPY_EDITORS) {
-			sourceView.copyEditors(editors, targetView);
+			const copies = sourceView.copyEditors(editors, targetView);
+			tabStacks = tabStacks.map(tabStack => ({ ...tabStack, editors: tabStack.editors.map(editor => copies.get(editor) ?? editor) }));
 		} else {
 			result = sourceView.moveEditors(editors, targetView);
+		}
+
+		// Keep the tab stacks of source once its editors are in target
+		if (tabStacks.length > 0) {
+			targetView.addTabStacks(tabStacks);
 		}
 
 		// Remove source if the view is now empty and not already removed

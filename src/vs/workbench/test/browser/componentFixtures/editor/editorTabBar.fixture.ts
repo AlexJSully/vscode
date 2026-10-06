@@ -50,7 +50,7 @@ import {
 	MODERN_EDITOR_TAB_INACTIVE_BACKGROUND,
 	MODERN_EDITOR_TAB_SELECTED_ACTION_BACKGROUND,
 } from '../../../../common/theme.js';
-import { DEFAULT_EDITOR_PART_OPTIONS, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView } from '../../../../browser/parts/editor/editor.js';
+import { DEFAULT_EDITOR_PART_OPTIONS, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView, isTabStacksEnabled } from '../../../../browser/parts/editor/editor.js';
 import { BreadcrumbsService, IBreadcrumbsService } from '../../../../browser/parts/editor/breadcrumbs.js';
 import { EditorTitleControl } from '../../../../browser/parts/editor/editorTitleControl.js';
 import { getTabStackColorCssValue } from '../../../../browser/parts/editor/tabStackEditor.js';
@@ -546,7 +546,6 @@ export function renderEditorTabBarFixture(ctx: ComponentFixtureContext, options:
 	});
 	configurationService.setUserConfiguration(LayoutSettings.MODERN_UI, options.modernUI);
 	configurationService.setUserConfiguration(LayoutSettings.MODERN_UI_EDITOR_TAB_STYLE, options.editorTabStyle ?? ModernUIEditorTabStyle.Connected);
-	configurationService.setUserConfiguration('workbench.editor.enableTabStacks', partOptions.enableTabStacks); // the group model keeps no tab stacks while disabled
 
 	const instantiationService = workbenchInstantiationService({
 		configurationService: () => configurationService,
@@ -593,6 +592,7 @@ export function renderEditorTabBarFixture(ctx: ComponentFixtureContext, options:
 
 	// Real editor group model populated with the fixture editors.
 	const model = disposableStore.add(instantiationService.createInstance(EditorGroupModel, undefined));
+	model.setTabStacksEnabled(isTabStacksEnabled(partOptions));
 	populateModel(model, options.editors ?? defaultEditorSpecs(), disposableStore);
 
 	const createEditorActions = (disposables: DisposableStore, menuId: MenuId) => {

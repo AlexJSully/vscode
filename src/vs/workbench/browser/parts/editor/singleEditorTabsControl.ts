@@ -7,7 +7,7 @@ import './media/singleeditortabscontrol.css';
 import { EditorResourceAccessor, Verbosity, IEditorPartOptions, SideBySideEditor, preventEditorClose, EditorCloseMethod, IToolbarActions, EditorInputCapabilities } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { TabStackId } from '../../../common/editor/editorGroupModel.js';
-import { TabStackEditorFocus } from './editor.js';
+import { TabStackEditorFocus } from '../../../services/editor/common/editorGroupsService.js';
 import { EditorTabsControl } from './editorTabsControl.js';
 import { ResourceLabel, IResourceLabel } from '../../labels.js';
 import { TAB_ACTIVE_FOREGROUND, TAB_UNFOCUSED_ACTIVE_FOREGROUND } from '../../../common/theme.js';

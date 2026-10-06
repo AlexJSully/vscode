@@ -8,6 +8,7 @@ import { EventType } from '../../../../../base/browser/dom.js';
 import { IListRenderer, IListVirtualDelegate } from '../../../../../base/browser/ui/list/list.js';
 import { ElementsDragAndDropData, ExternalElementsDragAndDropData, ListViewTargetSector } from '../../../../../base/browser/ui/list/listView.js';
 import { List } from '../../../../../base/browser/ui/list/listWidget.js';
+import { DeferredPromise, timeout } from '../../../../../base/common/async.js';
 import { Event } from '../../../../../base/common/event.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
 import { basename } from '../../../../../base/common/resources.js';
@@ -18,7 +19,10 @@ import { EditorsOrder } from '../../../../common/editor.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { SideBySideEditorInput } from '../../../../common/editor/sideBySideEditorInput.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
+import { Extensions as DragAndDropExtensions, IDragAndDropContributionRegistry } from '../../../../../platform/dnd/browser/dnd.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
+import { Registry } from '../../../../../platform/registry/common/platform.js';
+import { WorkspaceTrustUriResponse } from '../../../../../platform/workspace/common/workspaceTrust.js';
 import { IEditorGroupView } from '../../../../browser/parts/editor/editor.js';
 import { EditorService } from '../../../../services/editor/browser/editorService.js';
 import { GroupDirection, IEditorGroup, IEditorGroupsService } from '../../../../services/editor/common/editorGroupsService.js';
@@ -26,7 +30,7 @@ import { IEditorResolverService } from '../../../../services/editor/common/edito
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { OpenEditor } from '../../common/files.js';
 import { findFirstDirtyEditor, OpenEditorsDragAndDrop } from '../../browser/views/openEditorsView.js';
-import { createEditorPart, registerTestFileEditor, TestEditorGroupView, TestEditorInput, TestFileEditorInput, workbenchInstantiationService, workbenchTeardown } from '../../../../test/browser/workbenchTestServices.js';
+import { createEditorPart, registerTestFileEditor, TestEditorGroupView, TestEditorInput, TestFileEditorInput, TestServiceAccessor, workbenchInstantiationService, workbenchTeardown } from '../../../../test/browser/workbenchTestServices.js';
 
 suite('Files - OpenEditorsView', () => {
 	const store = ensureNoDisposablesAreLeakedInTestSuite();
@@ -122,7 +126,8 @@ suite('Files - OpenEditorsView', () => {
 	 * Creates an editor part with two groups that have a file editor for each
 	 * name of their fixture, drops on an editor of the first group in the Open
 	 * Editors view, and describes the drop and the editors of both groups
-	 * afterwards, with an `s` after each pinned editor.
+	 * afterwards, with an `s` after each pinned editor and a letter per tab
+	 * stack after each of its editors.
 	 *
 	 * @param drop drops on the editor of the first group with the name, and
 	 * resolves once the drop opened or moved the editors that it drops.
@@ -156,7 +161,12 @@ suite('Files - OpenEditorsView', () => {
 		await drop(new OpenEditorsDragAndDrop('editorOrder', instantiationService, part, instantiationService.get(IEditorResolverService)), groups, openEditorOf, instantiationService);
 		// A split editor and an editor of another kind than a file editor show their kind after the name of their file, and a pinned editor shows an `s` after it
 		const describeEditor = (editor: EditorInput) => editor instanceof SideBySideEditorInput ? `${editor.getName()}(split)` : editor instanceof TestFileEditorInput ? `${basename(editor.resource)}(${editor.typeId})` : editor.getName();
-		const describe = (group: IEditorGroup) => group.getEditors(EditorsOrder.SEQUENTIAL).map(editor => `${describeEditor(editor)}${group.isSticky(editor) ? 's' : ''}`).join(' ');
+		const describeTabStack = (group: IEditorGroup, editor: EditorInput) => {
+			const index = group.tabStacks.findIndex(tabStack => tabStack.id === group.getTabStack(editor)?.id);
+
+			return index >= 0 ? String.fromCharCode('a'.charCodeAt(0) + index) : '';
+		};
+		const describe = (group: IEditorGroup) => group.getEditors(EditorsOrder.SEQUENTIAL).map(editor => `${describeEditor(editor)}${group.isSticky(editor) ? 's' : ''}${describeTabStack(group, editor)}`).join(' ');
 		const result = `${description}: ${describe(groups[0])} | ${describe(groups[1])}`;
 
 		await workbenchTeardown(instantiationService);
@@ -165,23 +175,54 @@ suite('Files - OpenEditorsView', () => {
 	}
 
 	/**
+	 * What makes a drop of files open none of them: a registered drop handler
+	 * that takes them, or their trust prompt, cancelled.
+	 */
+	type DropRefusal = 'dropHandler' | 'trust';
+
+	function describeDropRefusal(refusal: DropRefusal): string {
+		return refusal === 'dropHandler' ? 'taken by a drop handler' : 'with trust cancelled';
+	}
+
+	/**
 	 * Drops the files with the space-separated names, in order, from the
 	 * Explorer on the Open Editors view before the target, an editor of the
-	 * group, and resolves once the group opened the files. The first file
-	 * must not be the active editor of the group.
+	 * group, and resolves once the group opened the files, or once the drop
+	 * finished if `refusal` refuses it. The first file must not be the active
+	 * editor of the group.
 	 */
-	async function dropFilesFromExplorer(dnd: OpenEditorsDragAndDrop, group: IEditorGroupView, target: OpenEditor, names: string, instantiationService: IInstantiationService): Promise<void> {
+	async function dropFilesFromExplorer(dnd: OpenEditorsDragAndDrop, group: IEditorGroupView, target: OpenEditor, names: string, instantiationService: IInstantiationService, refusal?: DropRefusal): Promise<void> {
 		const droppedNames = names.split(' ');
 		const dataTransfer = new DataTransfer();
 		instantiationService.invokeFunction(accessor => fillEditorsDragData(accessor, droppedNames.map(name => ({ resource: URI.file(name), isDirectory: false })), new DragEvent(EventType.DRAG_START, { dataTransfer })));
 
+		const refused = new DeferredPromise<void>();
+		const dropHandler = refusal === 'dropHandler' ? Registry.as<IDragAndDropContributionRegistry>(DragAndDropExtensions.DragAndDropContribution).registerDropHandler({
+			handleDrop: async () => {
+				refused.complete();
+				return true;
+			}
+		}) : undefined;
+		if (refusal === 'trust') {
+			instantiationService.createInstance(TestServiceAccessor).workspaceTrustRequestService.requestOpenUrisHandler = async () => {
+				refused.complete();
+				return WorkspaceTrustUriResponse.Cancel;
+			};
+		}
+
 		// The group opens the first dropped file active once the drop resolved it, and then the others after it
-		const opened = Promise.all([
+		const opened = refusal ? refused.p : Promise.all([
 			Event.toPromise(group.onDidActiveEditorChange),
 			Event.toPromise(Event.filter(group.onWillOpenEditor, e => e.editor.getName() === droppedNames.at(-1)))
 		]);
 		dnd.drop(new ExternalElementsDragAndDropData([]), target, 0, ListViewTargetSector.TOP, new DragEvent(EventType.DROP, { dataTransfer }));
 		await opened;
+
+		// A refused drop finishes right after it is refused
+		dropHandler?.dispose();
+		if (refusal) {
+			await timeout(0);
+		}
 	}
 
 	test('editors dropped on an editor land where the drop shows, also an editor from another group that the group has already', async () => {
@@ -278,42 +319,253 @@ suite('Files - OpenEditorsView', () => {
 		]);
 	});
 
+	test('files dropped from the Explorer on an editor that a registered drop handler takes, or whose trust is cancelled, move and unpin no editor', async () => {
+		const drops = [];
+		for (const [dropped, refusal] of [['9 4', 'dropHandler'], ['9 4', 'trust'], ['9 2', 'trust']] as const) {
+			drops.push(await dropOnFixture(['1 2 3 4 5', ''], `${dropped} before 3 with 1 2 pinned, ${describeDropRefusal(refusal)}`, async (dnd, groups, openEditorOf, instantiationService) => {
+				const [group] = groups;
+				group.stickEditor(openEditorOf(group, '1').editor);
+				group.stickEditor(openEditorOf(group, '2').editor);
+
+				await dropFilesFromExplorer(dnd, group, openEditorOf(group, '3'), dropped, instantiationService, refusal);
+			}));
+		}
+
+		assert.deepStrictEqual(drops, [
+			'9 4 before 3 with 1 2 pinned, taken by a drop handler: 1s 2s 3 4 5 | ',
+			'9 4 before 3 with 1 2 pinned, with trust cancelled: 1s 2s 3 4 5 | ',
+			'9 2 before 3 with 1 2 pinned, with trust cancelled: 1s 2s 3 4 5 | ',
+		]);
+	});
+
+	test('a file dropped from the Explorer on an editor lands before that editor, also when an editor closes while the drop waits for trust', async () => {
+		const drops = [];
+		for (const closed of ['1', '3']) {
+			drops.push(await dropOnFixture(['1 2 3 4', ''], `9 before 3 with ${closed} closed on the trust prompt`, async (dnd, groups, openEditorOf, instantiationService) => {
+				const [group] = groups;
+				const closedEditor = openEditorOf(group, closed).editor;
+				instantiationService.createInstance(TestServiceAccessor).workspaceTrustRequestService.requestOpenUrisHandler = async () => {
+					await group.closeEditor(closedEditor);
+					return WorkspaceTrustUriResponse.Open;
+				};
+
+				await dropFilesFromExplorer(dnd, group, openEditorOf(group, '3'), '9', instantiationService);
+			}));
+		}
+
+		assert.deepStrictEqual(drops, [
+			'9 before 3 with 1 closed on the trust prompt: 2 9 3 4 | ',
+			'9 before 3 with 3 closed on the trust prompt: 1 2 9 4 | ',
+		]);
+	});
+
 	test('tab stacks - files dropped together from the Explorer before a tab stack land next to each other outside of it, so none joins it', async () => {
-		const tabStackMembers: string[] = [];
 		const drop = await dropOnFixture(['1 2 3 4', ''], '9 1 before 3 with 3 4 in a tab stack', async (dnd, groups, openEditorOf, instantiationService) => {
 			const [group] = groups;
 			group.addEditorsToTabStack([openEditorOf(group, '3').editor, openEditorOf(group, '4').editor]);
 
 			await dropFilesFromExplorer(dnd, group, openEditorOf(group, '3'), '9 1', instantiationService);
-			tabStackMembers.push(...group.getEditors(EditorsOrder.SEQUENTIAL).filter(editor => !!group.getTabStack(editor)).map(editor => editor.getName()));
 		}, { enableTabStacks: true });
 
-		assert.deepStrictEqual({ drop, tabStackMembers }, {
-			drop: '9 1 before 3 with 3 4 in a tab stack: 2 9 1 3 4 | ',
-			tabStackMembers: ['3', '4'],
-		});
+		assert.deepStrictEqual(drop, '9 1 before 3 with 3 4 in a tab stack: 2 9 1 3a 4a | ');
 	});
 
 	test('tab stacks - files dropped from the Explorer that the group has already leave their tab stack, as on the tabs, unless they are all of its editors and no file opens between them', async () => {
 		const drops = [];
 		for (const [dropped, target] of [['2 9 3', '4'], ['2', '4'], ['2 3', '4'], ['2 3', '1'], ['3 2', '1']]) {
-			let tabStackMembers: string[] = [];
-			const drop = await dropOnFixture(['1 2 3 4', ''], `${dropped} before ${target} with 2 3 in a tab stack`, async (dnd, groups, openEditorOf, instantiationService) => {
+			drops.push(await dropOnFixture(['1 2 3 4', ''], `${dropped} before ${target} with 2 3 in a tab stack`, async (dnd, groups, openEditorOf, instantiationService) => {
 				const [group] = groups;
 				group.addEditorsToTabStack([openEditorOf(group, '2').editor, openEditorOf(group, '3').editor]);
 
 				await dropFilesFromExplorer(dnd, group, openEditorOf(group, target), dropped, instantiationService);
-				tabStackMembers = group.getEditors(EditorsOrder.SEQUENTIAL).filter(editor => !!group.getTabStack(editor)).map(editor => editor.getName());
-			}, { enableTabStacks: true });
-			drops.push({ drop, tabStackMembers });
+			}, { enableTabStacks: true }));
 		}
 
 		assert.deepStrictEqual(drops, [
-			{ drop: '2 9 3 before 4 with 2 3 in a tab stack: 1 2 9 3 4 | ', tabStackMembers: [] },
-			{ drop: '2 before 4 with 2 3 in a tab stack: 1 3 2 4 | ', tabStackMembers: ['3'] },
-			{ drop: '2 3 before 4 with 2 3 in a tab stack: 1 2 3 4 | ', tabStackMembers: ['2', '3'] },
-			{ drop: '2 3 before 1 with 2 3 in a tab stack: 2 3 1 4 | ', tabStackMembers: ['2', '3'] },
-			{ drop: '3 2 before 1 with 2 3 in a tab stack: 3 2 1 4 | ', tabStackMembers: ['3', '2'] },
+			'2 9 3 before 4 with 2 3 in a tab stack: 1 2 9 3 4 | ',
+			'2 before 4 with 2 3 in a tab stack: 1 3a 2 4 | ',
+			'2 3 before 4 with 2 3 in a tab stack: 1 2a 3a 4 | ',
+			'2 3 before 1 with 2 3 in a tab stack: 2a 3a 1 4 | ',
+			'3 2 before 1 with 2 3 in a tab stack: 3a 2a 1 4 | ',
+		]);
+	});
+
+	test('tab stacks - files dropped from the Explorer that a registered drop handler takes, or whose trust is cancelled, take no editor out of its tab stack', async () => {
+		const drops = [];
+		for (const refusal of ['dropHandler', 'trust'] as const) {
+			drops.push(await dropOnFixture(['1 2 3 4', ''], `2 before 4 with 2 3 in a tab stack, ${describeDropRefusal(refusal)}`, async (dnd, groups, openEditorOf, instantiationService) => {
+				const [group] = groups;
+				group.addEditorsToTabStack([openEditorOf(group, '2').editor, openEditorOf(group, '3').editor]);
+
+				await dropFilesFromExplorer(dnd, group, openEditorOf(group, '4'), '2', instantiationService, refusal);
+			}, { enableTabStacks: true }));
+		}
+
+		assert.deepStrictEqual(drops, [
+			'2 before 4 with 2 3 in a tab stack, taken by a drop handler: 1 2a 3a 4 | ',
+			'2 before 4 with 2 3 in a tab stack, with trust cancelled: 1 2a 3a 4 | ',
+		]);
+	});
+
+	test('tab stacks - entries of a whole tab stack dropped in their group keep it, and inside another tab stack land after it', async () => {
+		const drops = [];
+		for (const tabStacks of [['2 3'], ['2 3', '4 5']]) {
+			drops.push(await dropOnFixture(['1 2 3 4 5', ''], `2 3 before 5 with ${tabStacks.join(' and ')} in tab stacks`, async (dnd, groups, openEditorOf) => {
+				const [group] = groups;
+				for (const names of tabStacks) {
+					group.addEditorsToTabStack(names.split(' ').map(name => openEditorOf(group, name).editor));
+				}
+
+				dnd.drop(new ElementsDragAndDropData(['2', '3'].map(name => openEditorOf(group, name))), openEditorOf(group, '5'), 0, ListViewTargetSector.TOP, new DragEvent(EventType.DROP));
+			}, { enableTabStacks: true }));
+		}
+
+		assert.deepStrictEqual(drops, [
+			'2 3 before 5 with 2 3 in tab stacks: 1 4 2a 3a 5 | ',
+			'2 3 before 5 with 2 3 and 4 5 in tab stacks: 1 4a 5a 2b 3b | ',
+		]);
+	});
+
+	test('tab stacks - the files of a whole tab stack dropped among the pinned editors are pinned and leave it, and the tabs show them pinned', async () => {
+		let tabs = '';
+		const drop = await dropOnFixture(['1 2 3 4 5', ''], '3 4 before 2 with 1 2 pinned and 3 4 in a tab stack', async (dnd, groups, openEditorOf, instantiationService) => {
+			const [group] = groups;
+			group.stickEditor(openEditorOf(group, '1').editor);
+			group.stickEditor(openEditorOf(group, '2').editor);
+			group.addEditorsToTabStack([openEditorOf(group, '3').editor, openEditorOf(group, '4').editor]);
+
+			await dropFilesFromExplorer(dnd, group, openEditorOf(group, '2'), '3 4', instantiationService);
+			tabs = Array.from(group.element.querySelectorAll('.tabs-container'), tabsContainer => Array.from(tabsContainer.querySelectorAll(':scope > .tab'), tab => tab.getAttribute('data-resource-name')).join(' ')).join(' | ');
+		}, { enableTabStacks: true, pinnedTabsOnSeparateRow: true });
+
+		assert.deepStrictEqual({ drop, tabs }, {
+			drop: '3 4 before 2 with 1 2 pinned and 3 4 in a tab stack: 1s 3s 4s 2s 5 | ',
+			tabs: '1 3 4 2 | 5'
+		});
+	});
+
+	test('tab stacks - a pinned file dropped from the Explorer past the pinned editors is unpinned and lands outside of tab stacks, also together with an editor of a tab stack', async () => {
+		const drops = [];
+		for (const [dropped, target] of [['1', '3'], ['1 3', '4'], ['2 1', '2']]) {
+			drops.push(await dropOnFixture(['1 2 3 4', ''], `${dropped} before ${target} with 1 pinned and 2 3 in a tab stack`, async (dnd, groups, openEditorOf, instantiationService) => {
+				const [group] = groups;
+				group.stickEditor(openEditorOf(group, '1').editor);
+				group.addEditorsToTabStack([openEditorOf(group, '2').editor, openEditorOf(group, '3').editor]);
+
+				await dropFilesFromExplorer(dnd, group, openEditorOf(group, target), dropped, instantiationService);
+			}, { enableTabStacks: true }));
+		}
+
+		assert.deepStrictEqual(drops, [
+			'1 before 3 with 1 pinned and 2 3 in a tab stack: 2a 3a 1 4 | ',
+			'1 3 before 4 with 1 pinned and 2 3 in a tab stack: 2a 1 3 4 | ',
+			'2 1 before 2 with 1 pinned and 2 3 in a tab stack: 2 1 3a 4 | ',
+		]);
+	});
+
+	test('tab stacks - files dropped from the Explorer among or right after the pinned editors leave their tab stack, as on the tabs, also next to a pinned file that stays pinned', async () => {
+		const drops = [];
+		for (const [pinned, tabStack, dropped, target] of [['1', '2 3', '1 3', '2'], ['1 2', '3 4', '2 3', '2']]) {
+			drops.push(await dropOnFixture(['1 2 3 4 5', ''], `${dropped} before ${target} with ${pinned} pinned and ${tabStack} in a tab stack`, async (dnd, groups, openEditorOf, instantiationService) => {
+				const [group] = groups;
+				for (const name of pinned.split(' ')) {
+					group.stickEditor(openEditorOf(group, name).editor);
+				}
+				group.addEditorsToTabStack(tabStack.split(' ').map(name => openEditorOf(group, name).editor));
+
+				await dropFilesFromExplorer(dnd, group, openEditorOf(group, target), dropped, instantiationService);
+			}, { enableTabStacks: true }));
+		}
+
+		assert.deepStrictEqual(drops, [
+			'1 3 before 2 with 1 pinned and 2 3 in a tab stack: 1s 3 2a 4 5 | ',
+			'2 3 before 2 with 1 2 pinned and 3 4 in a tab stack: 1s 2s 3 4a 5 | ',
+		]);
+	});
+
+	test('tab stacks - a file that the group has already, dropped inside a tab stack, lands after it without joining it, unless the drop is the whole tab stack', async () => {
+		const drops = [];
+		for (const dropped of ['1', '2 3', '9']) {
+			drops.push(await dropOnFixture(['1 2 3 4', ''], `${dropped} before 3 with 2 3 in a tab stack`, async (dnd, groups, openEditorOf, instantiationService) => {
+				const [group] = groups;
+				group.addEditorsToTabStack([openEditorOf(group, '2').editor, openEditorOf(group, '3').editor]);
+
+				await dropFilesFromExplorer(dnd, group, openEditorOf(group, '3'), dropped, instantiationService);
+			}, { enableTabStacks: true }));
+		}
+
+		assert.deepStrictEqual(drops, [
+			'1 before 3 with 2 3 in a tab stack: 2a 3a 1 4 | ',
+			'2 3 before 3 with 2 3 in a tab stack: 1 2a 3a 4 | ',
+			'9 before 3 with 2 3 in a tab stack: 1 2a 3a 9 4 | ',
+		]);
+	});
+
+	test('tab stacks - an entry dropped inside a tab stack lands after it without joining it, and an entry of that tab stack stays in it', async () => {
+		const drops = [];
+		for (const [dragged, target, sector] of [['1', '3', ListViewTargetSector.TOP], ['4', '3', ListViewTargetSector.TOP], ['2', '5', ListViewTargetSector.BOTTOM]] as const) {
+			drops.push(await dropOnFixture(['1 2 3 4 5', ''], `${dragged} ${sector === ListViewTargetSector.TOP ? 'before' : 'after'} ${target} with 2 3 4 in a tab stack`, async (dnd, groups, openEditorOf) => {
+				const [group] = groups;
+				group.addEditorsToTabStack(['2', '3', '4'].map(name => openEditorOf(group, name).editor));
+
+				dnd.drop(new ElementsDragAndDropData([openEditorOf(group, dragged)]), openEditorOf(group, target), 0, sector, new DragEvent(EventType.DROP));
+			}, { enableTabStacks: true }));
+		}
+
+		assert.deepStrictEqual(drops, [
+			'1 before 3 with 2 3 4 in a tab stack: 2a 3a 4a 1 5 | ',
+			'4 before 3 with 2 3 4 in a tab stack: 1 2a 4a 3a 5 | ',
+			'2 after 5 with 2 3 4 in a tab stack: 1 3a 4a 5 2 | ',
+		]);
+	});
+
+	test('tab stacks - entries from another group dropped around a tab stack land in drop order', async () => {
+		const drop = await dropOnFixture(['1 2 3 4', '5 6'], '5 6 of group 2 before 3 with 2 3 in a tab stack', async (dnd, groups, openEditorOf) => {
+			const [group, otherGroup] = groups;
+			group.addEditorsToTabStack([openEditorOf(group, '2').editor, openEditorOf(group, '3').editor]);
+
+			dnd.drop(new ElementsDragAndDropData(['5', '6'].map(name => openEditorOf(otherGroup, name))), openEditorOf(group, '3'), 0, ListViewTargetSector.TOP, new DragEvent(EventType.DROP));
+		}, { enableTabStacks: true });
+
+		assert.deepStrictEqual(drop, '5 6 of group 2 before 3 with 2 3 in a tab stack: 1 2a 3a 5 6 4 | ');
+	});
+
+	test('tab stacks - entries dragged together land next to each other in drop order, and stay in their tab stack only when all of them are its editors', async () => {
+		const drops = [];
+		for (const [pinned, tabStack, dragged, target] of [
+			['', '2 3 4', '3 5', '2'],
+			['', '2 3 4', '5 3', '2'],
+			['', '2 3 4', '3 9', '2'],
+			['', '2 3', '2 3 5', '1'],
+			['', '2 3', '2 3 5', '4'],
+			['', '2 3 4', '4 1', '3'],
+			['', '2 3 4', '3', '2'],
+			['', '2 3 4', '3 4', '2'],
+			['', '2 3 4', '1 4', '3'],
+			['1 2', '3 4', '2 3', '5'],
+		]) {
+			drops.push(await dropOnFixture(['1 2 3 4 5', '9'], `${dragged} before ${target} with ${tabStack} in a tab stack${pinned ? ` and ${pinned} pinned` : ''}`, async (dnd, groups, openEditorOf) => {
+				const [group, otherGroup] = groups;
+				for (const name of pinned.split(' ').filter(name => !!name)) {
+					group.stickEditor(openEditorOf(group, name).editor);
+				}
+				group.addEditorsToTabStack(tabStack.split(' ').map(name => openEditorOf(group, name).editor));
+
+				dnd.drop(new ElementsDragAndDropData(dragged.split(' ').map(name => openEditorOf(name === '9' ? otherGroup : group, name))), openEditorOf(group, target), 0, ListViewTargetSector.TOP, new DragEvent(EventType.DROP));
+			}, { enableTabStacks: true }));
+		}
+
+		assert.deepStrictEqual(drops, [
+			'3 5 before 2 with 2 3 4 in a tab stack: 1 3 5 2a 4a | 9',
+			'5 3 before 2 with 2 3 4 in a tab stack: 1 5 3 2a 4a | 9',
+			'3 9 before 2 with 2 3 4 in a tab stack: 1 3 9 2a 4a 5 | ',
+			'2 3 5 before 1 with 2 3 in a tab stack: 2 3 5 1 4 | 9',
+			'2 3 5 before 4 with 2 3 in a tab stack: 1 2 3 5 4 | 9',
+			'4 1 before 3 with 2 3 4 in a tab stack: 2a 3a 4 1 5 | 9',
+			'3 before 2 with 2 3 4 in a tab stack: 1 3a 2a 4a 5 | 9',
+			'3 4 before 2 with 2 3 4 in a tab stack: 1 3a 4a 2a 5 | 9',
+			'1 4 before 3 with 2 3 4 in a tab stack: 2a 3a 1 4 5 | 9',
+			'2 3 before 5 with 3 4 in a tab stack and 1 2 pinned: 1s 4a 2 3 5 | 9',
 		]);
 	});
 

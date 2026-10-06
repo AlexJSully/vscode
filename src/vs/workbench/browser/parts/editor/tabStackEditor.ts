@@ -20,40 +20,28 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { defaultButtonStyles, defaultInputBoxStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { asCssVariable } from '../../../../platform/theme/common/colorRegistry.js';
-import { ITabStack, ITabStackUpdate, isTabStackPresetColor, TAB_STACK_COLORS, TabStackColor, TabStackId } from '../../../common/editor/editorGroupModel.js';
+import { isCustomTabStackColor, ITabStack, ITabStackUpdate, TAB_STACK_COLORS, TabStackColor, TabStackId } from '../../../common/editor/editorGroupModel.js';
 import { TAB_STACK_COLOR_IDS } from '../../../common/theme.js';
-import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
-import { TabStackEditorFocus } from './editor.js';
+import { IEditorGroup, TabStackEditorFocus } from '../../../services/editor/common/editorGroupsService.js';
 import { getTabStackColorLabel, inputCustomTabStackColor, TAB_STACK_CUSTOM_COLOR_LABEL } from './tabStackPickers.js';
 
-/**
- * The editor group of the tab stack that a {@link TabStackEditor} edits.
- */
 export type TabStackEditorGroup = Pick<IEditorGroup, 'tabStacks' | 'onDidModelChange' | 'updateTabStack'>;
 
-/**
- * The swatch of a tab stack color in a {@link TabStackEditor}.
- */
 interface ITabStackColorSwatch {
 	readonly color: TabStackColor;
 	readonly element: HTMLElement;
 }
 
 /**
- * Returns the CSS value of a tab stack color: the variable of the theme color
- * of a preset color, or the hex value of a custom color.
+ * Returns the CSS value of a tab stack color: its theme color variable, or the custom hex color.
  */
 export function getTabStackColorCssValue(color: TabStackColor): string {
-	return isTabStackPresetColor(color) ? asCssVariable(TAB_STACK_COLOR_IDS[color]) : color;
+	return isCustomTabStackColor(color) ? color : asCssVariable(TAB_STACK_COLOR_IDS[color]);
 }
 
 /**
- * The editor of a tab stack: a bubble under the header of the tab stack, like
- * the editor bubble of a tab group in Chromium, with the name of the tab stack
- * and its colors. Changes apply as they are made, so the header shows them
- * right away, and they stay when the editor closes. The editor closes on Enter
- * in the name, on Escape, when focus leaves it, on a mouse down elsewhere and
- * when the tab stack is gone, and it blocks nothing else while it is open.
+ * The name and color bubble of a tab stack under its header, like the editor bubble of a tab group in
+ * Chromium. Changes apply as they are made.
  */
 export class TabStackEditor extends Disposable {
 
@@ -72,10 +60,8 @@ export class TabStackEditor extends Disposable {
 	}
 
 	/**
-	 * Shows the editor under the anchor, with the name of the tab stack focused
-	 * and selected, or with its checked color focused. When the editor closes
-	 * while focus is inside it, focus returns to where it was before the
-	 * editor showed.
+	 * Shows the editor under the anchor with the name or the checked color focused. Closing it while
+	 * focus is inside returns focus to where it was.
 	 */
 	show(focus: TabStackEditorFocus = 'name'): void {
 		const tabStack = this.findTabStack();
@@ -124,18 +110,12 @@ export class TabStackEditor extends Disposable {
 		}, this.layoutService.getContainer(getWindow(this.anchor)));
 	}
 
-	/**
-	 * Moves the editor under the anchor again, after the anchor moved.
-	 */
 	layout(): void {
 		if (this.openContextView) {
 			this.contextViewService.layout();
 		}
 	}
 
-	/**
-	 * Closes the editor, keeping the changes it applied.
-	 */
 	hide(): void {
 		this.openContextView?.close();
 	}
@@ -154,11 +134,6 @@ export class TabStackEditor extends Disposable {
 		this.group.updateTabStack(this.tabStackId, update);
 	}
 
-	/**
-	 * Renders the name of the tab stack, which applies as it is typed, without
-	 * surrounding whitespace, and closes the editor on Enter. An empty name
-	 * leaves the tab stack unnamed.
-	 */
 	private renderName(element: HTMLElement, tabStack: ITabStack, disposables: DisposableStore): InputBox {
 		const input = disposables.add(new InputBox(element, undefined, {
 			placeholder: localize('tabStackEditorNamePlaceholder', "Name this tab stack"),
@@ -178,16 +153,13 @@ export class TabStackEditor extends Disposable {
 	}
 
 	/**
-	 * Renders a radio group with a swatch per preset color, and one for the
-	 * color of the tab stack when it is custom, with the color of the tab
-	 * stack checked. Checking a swatch applies its color. Only the checked
-	 * swatch is in the tab order. Right and Down check the next swatch, Left
-	 * and Up the previous one, wrapping around at either end.
+	 * Renders the colors as a radio group, where only the checked swatch is in the tab order and the
+	 * arrow keys check the next or previous one.
 	 */
 	private renderColors(element: HTMLElement, tabStack: ITabStack, disposables: DisposableStore): ITabStackColorSwatch[] {
 		const colorsElement = append(element, $('.tab-stack-editor-colors', { role: 'radiogroup', 'aria-label': localize('tabStackEditorColorsAriaLabel', "Color") }));
 		const colors: { readonly color: TabStackColor; readonly label: string }[] = TAB_STACK_COLORS.map(color => ({ color, label: getTabStackColorLabel(color) }));
-		if (!isTabStackPresetColor(tabStack.color)) {
+		if (isCustomTabStackColor(tabStack.color)) {
 			colors.push({ color: tabStack.color, label: localize('tabStackEditorCustomColorSwatch', "Custom color {0}", tabStack.color) });
 		}
 
@@ -235,10 +207,8 @@ export class TabStackEditor extends Disposable {
 	}
 
 	/**
-	 * Closes the editor on Escape, when focus leaves it, on a mouse down
-	 * elsewhere and once the tab stack is gone, and keeps Tab and Shift+Tab
-	 * cycling through the tab stops of the editor. A mouse down on the
-	 * background of the editor, which takes no focus, keeps focus where it is.
+	 * Cycles Tab and Shift+Tab through the tab stops of the editor, and keeps a mouse down on its
+	 * background, which takes no focus, from moving focus.
 	 */
 	private registerListeners(element: HTMLElement, getTabStops: () => HTMLElement[], disposables: DisposableStore): void {
 		disposables.add(addDisposableListener(element, EventType.KEY_DOWN, e => {
@@ -277,9 +247,8 @@ export class TabStackEditor extends Disposable {
 	}
 
 	/**
-	 * Asks for a custom color with a quick input and applies it. The editor
-	 * closes first, because the quick input takes focus and gives it back to
-	 * where it was when the editor showed.
+	 * Asks for a custom color with a quick input and applies it. The editor closes first, since the
+	 * quick input takes focus.
 	 */
 	private async editCustomColor(): Promise<void> {
 		const tabStack = this.findTabStack();

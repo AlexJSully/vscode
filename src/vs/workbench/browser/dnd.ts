@@ -102,7 +102,7 @@ export class ResourcesDropHandler {
 	) {
 	}
 
-	async handleDrop(event: DragEvent, targetWindow: Window, resolveTargetGroup?: () => IEditorGroup | undefined, afterDrop?: (targetGroup: IEditorGroup | undefined) => void, options?: IEditorOptions): Promise<void> {
+	async handleDrop(event: DragEvent, targetWindow: Window, resolveTargetGroup?: () => IEditorGroup | undefined, afterDrop?: (targetGroup: IEditorGroup | undefined) => void, options?: IEditorOptions, beforeOpen?: () => IEditorOptions | undefined): Promise<void> {
 		const editors = await this.instantiationService.invokeFunction(accessor => extractEditorsAndFilesDropData(accessor, event));
 		if (!editors.length) {
 			return;
@@ -149,7 +149,7 @@ export class ResourcesDropHandler {
 				...options,
 				pinned: true
 			}
-		})), targetGroup, { validateTrust: true });
+		})), targetGroup, { validateTrust: true, beforeOpen });
 
 		// Finish with provided function
 		afterDrop?.(targetGroup);
@@ -205,13 +205,8 @@ export class ResourcesDropHandler {
 }
 
 /**
- * Returns the editor of the group that opening the dropped editor in the
- * group opens again, the way the group finds it once the dropped editor is
- * resolved. Only a diff editor matches a dropped diff editor. Any other
- * dropped editor opens in the editor that its override names, or else in the
- * default editor of its resource, so it matches the first editor of that
- * kind for its resource, or else the last side by side editor, such as one
- * split in its group, that shows such an editor on both sides.
+ * Returns the editor of the group that opening the dropped editor opens again, as the group finds it
+ * once the dropped editor is resolved.
  */
 export function findEditorOfDroppedEditor(group: IEditorGroup, droppedEditor: IDraggedResourceEditorInput, editorResolverService: IEditorResolverService): EditorInput | undefined {
 	const editors = group.getEditors(EditorsOrder.SEQUENTIAL);
@@ -231,19 +226,9 @@ export function findEditorOfDroppedEditor(group: IEditorGroup, droppedEditor: ID
 }
 
 /**
- * Moves the editors of the group that opening the dropped editors opens
- * again next to each other, in drop order, before the first other editor at
- * or after the index, counted before anything moves. Returns the index to
- * open the dropped editors at: the group opens the first of them at that
- * index and each other one right after the one before it, so the moved
- * editors stay in place and the editors that the group does not have yet
- * open between them in drop order. The group moves the editor of the first
- * dropped editor itself when it opens it at that index. At or past the end of
- * the sticky editors, a sticky editor that follows, in drop order, a dropped
- * editor that the group does not have yet or that is not sticky is unstuck.
- *
- * @param sticky whether the moved editors become sticky, as the dropped
- * editors open.
+ * Moves the editors of the group for the dropped editors after the first together in drop order at
+ * the index. Returns the index to open the dropped editors at, where the group then moves the editor
+ * of the first one itself.
  */
 export function moveEditorsOfDroppedEditors(group: IEditorGroup, droppedEditors: readonly IDraggedResourceEditorInput[], index: number, editorResolverService: IEditorResolverService, sticky?: boolean): number {
 	const editorsOfDroppedEditors = droppedEditors.map(droppedEditor => findEditorOfDroppedEditor(group, droppedEditor, editorResolverService));
@@ -254,7 +239,6 @@ export function moveEditorsOfDroppedEditors(group: IEditorGroup, droppedEditors:
 
 	const editorAfter = group.getEditors(EditorsOrder.SEQUENTIAL).slice(index).find(editor => !editors.includes(editor));
 
-	// The index that moving an editor of the group to right before another one, or to the end without one, moves it to
 	const getIndexToMoveBefore = (editor: EditorInput, nextEditor: EditorInput | undefined) => {
 		const nextIndex = nextEditor ? group.getIndexOfEditor(nextEditor) : group.count;
 
@@ -265,9 +249,7 @@ export function moveEditorsOfDroppedEditors(group: IEditorGroup, droppedEditors:
 	const firstEditor = editorsOfDroppedEditors[0];
 	const laterEditors = firstEditor ? editors.slice(1) : editors;
 
-	// At or past the end of the sticky editors, the dropped editors stay sticky only up to the first one that the
-	// group does not have yet or that is not sticky, and those after it are unstuck, as a drop of their tabs
-	// unsticks them, so that no editor that opens between them lands among the sticky editors and sticks
+	// Unstick editors after the first new or unsticky one, so no editor opening between them sticks
 	const firstUnstickyIndex = editorsOfDroppedEditors.findIndex(editor => !editor || !group.isSticky(editor));
 	if (!sticky && index >= group.stickyCount && firstUnstickyIndex >= 0) {
 		for (const editor of laterEditors) {
@@ -282,6 +264,20 @@ export function moveEditorsOfDroppedEditors(group: IEditorGroup, droppedEditors:
 	}
 
 	return firstEditor ? getIndexToMoveBefore(firstEditor, laterEditors.at(0) ?? editorAfter) : group.getIndexOfEditor(laterEditors[0]);
+}
+
+/**
+ * Returns a function that returns the index of a drop at `index`, before the
+ * same editor, once the editors of the group may have changed.
+ */
+export function anchorDropIndex(group: IEditorGroup, index: number): () => number {
+	const editorAfter = group.getEditorByIndex(index);
+
+	return () => {
+		const editorAfterIndex = editorAfter ? group.getIndexOfEditor(editorAfter) : group.count;
+
+		return editorAfterIndex >= 0 ? editorAfterIndex : Math.min(index, group.count);
+	};
 }
 
 export function fillEditorsDragData(accessor: ServicesAccessor, resources: URI[], event: DragMouseEvent | DragEvent, options?: { disableStandardTransfer: boolean }): void;

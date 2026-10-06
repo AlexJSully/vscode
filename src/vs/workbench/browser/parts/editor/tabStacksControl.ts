@@ -5,7 +5,7 @@
 
 import { isFirefox } from '../../../../base/browser/browser.js';
 import { DataTransfers } from '../../../../base/browser/dnd.js';
-import { $, addDisposableListener, DragAndDropObserver, EventHelper, EventType, getWindow, isMouseEvent } from '../../../../base/browser/dom.js';
+import { $, addDisposableListener, DragAndDropObserver, EventHelper, EventType, getActiveElement, getWindow, isAncestorOfActiveElement, isHTMLElement, isMouseEvent } from '../../../../base/browser/dom.js';
 import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
 import { StandardMouseEvent } from '../../../../base/browser/mouseEvent.js';
 import { EventType as TouchEventType, Gesture, GestureEvent } from '../../../../base/browser/touch.js';
@@ -20,6 +20,7 @@ import { Disposable, DisposableMap, DisposableStore, IDisposable, MutableDisposa
 import { isMacintosh } from '../../../../base/common/platform.js';
 import { assertReturnsDefined } from '../../../../base/common/types.js';
 import { localize } from '../../../../nls.js';
+import { IAccessibilityService } from '../../../../platform/accessibility/common/accessibility.js';
 import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
 import { IContextMenuService } from '../../../../platform/contextview/browser/contextView.js';
 import { LocalSelectionTransfer } from '../../../../platform/dnd/browser/dnd.js';
@@ -27,114 +28,57 @@ import { IHoverService } from '../../../../platform/hover/browser/hover.js';
 import { IInstantiationService } from '../../../../platform/instantiation/common/instantiation.js';
 import { IThemeService } from '../../../../platform/theme/common/themeService.js';
 import { EditorsOrder, GroupIdentifier } from '../../../common/editor.js';
-import { IReadonlyEditorGroupModel, ITabStack, isTabStackPresetColor, TabStackColor, TabStackId } from '../../../common/editor/editorGroupModel.js';
+import { IReadonlyEditorGroupModel, isCustomTabStackColor, ITabStack, TabStackColor, TabStackId } from '../../../common/editor/editorGroupModel.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { EDITOR_GROUP_HEADER_TABS_BACKGROUND, TAB_STACK_COLOR_IDS } from '../../../common/theme.js';
-import { EditorTabStackContextMenuId, IEditorGroupsView, IEditorGroupView, isTabStacksEnabled, TabStackEditorFocus } from './editor.js';
+import { TabStackEditorFocus } from '../../../services/editor/common/editorGroupsService.js';
+import { EditorTabStackContextMenuId, IEditorGroupsView, IEditorGroupView, isTabStacksEnabled, setTabStackCollapsed } from './editor.js';
 import { getTabStackColorCssValue, TabStackEditor, TabStackEditorGroup } from './tabStackEditor.js';
 import { IDraggedTabStack, ITabsDropHandlerTabStacks, TabsDropSlot } from './tabsDropHandler.js';
 
 interface ITabStackHeader extends IDisposable {
 
-	/**
-	 * The header element in the tabs container, placed before the first tab
-	 * of its tab stack.
-	 */
 	readonly element: HTMLElement;
-
-	/**
-	 * The element showing the name of the tab stack.
-	 */
 	readonly label: HTMLElement;
 
 	/**
-	 * The name and color bubble of the tab stack under the header, which
-	 * closes with the header.
+	 * The name and color bubble of the tab stack, which closes with the header.
 	 */
 	readonly bubble: MutableDisposable<TabStackEditor>;
 }
 
-/**
- * A tab stack header that is dragged to move its tab stack within the tabs
- * of its group.
- */
 class DraggedTabStackIdentifier implements IDraggedTabStack {
 	constructor(readonly groupId: GroupIdentifier, readonly tabStackId: TabStackId) { }
 }
 
-/**
- * The tab bar that shows tab stacks, as its tab stack headers use it.
- */
 interface ITabStacksControlDelegate {
 
 	/**
-	 * The tab of each editor by index, including the tabs of collapsed tab
-	 * stacks, which are detached from the tabs container.
+	 * The tab of each editor by index, including the tabs of collapsed tab stacks, which are
+	 * detached from the tabs container.
 	 */
 	readonly tabs: readonly HTMLElement[];
 
-	/**
-	 * Returns the container of the tabs and tab stack headers, once created.
-	 */
 	getTabsContainer(): HTMLElement | undefined;
 
 	/**
-	 * Returns the Add Tab control, which stays the last child of the tabs
-	 * container, if the tab bar has one.
+	 * Returns the Add Tab control, which stays the last child of the tabs container.
 	 */
 	getAddTabContainer(): HTMLElement | undefined;
 
-	/**
-	 * Returns the scrollbar that scrolls the tabs, once created.
-	 */
 	getTabsScrollbar(): ScrollableElement | undefined;
-
-	/**
-	 * Scrolls the tabs so that the tab stack header is within their visible
-	 * part.
-	 */
 	revealTabStackHeader(header: HTMLElement): void;
-
-	/**
-	 * Blocks the next reveal of the active tab.
-	 */
 	blockRevealActiveTabOnce(): void;
-
-	/**
-	 * Lifts the block of the next reveal of the active tab unless a layout,
-	 * which takes the block, is pending.
-	 */
 	unblockRevealActiveTabUnlessLayoutPending(): void;
-
-	/**
-	 * Returns the keybinding of the action for menus of the tab bar.
-	 */
 	getKeybinding(action: IAction): ResolvedKeybinding | undefined;
-
-	/**
-	 * Handles a drag that enters a tab stack header.
-	 */
 	onTabsDragEnter(e: DragEvent, slot: TabsDropSlot): void;
-
-	/**
-	 * Handles a drag over a tab stack header.
-	 */
 	onTabsDragOver(e: DragEvent, slot: TabsDropSlot): void;
-
-	/**
-	 * Handles the end of the drag of a tab stack header.
-	 */
 	onTabsDragEnd(): void;
-
-	/**
-	 * Handles a drop on a tab stack header.
-	 */
 	onTabsDrop(e: DragEvent, slot: TabsDropSlot): void;
 }
 
 /**
- * Marks the element with the class name while there is a tab stack, and gives it
- * the color of the tab stack.
+ * Marks the element with the class and the color of the tab stack, or clears both without a tab stack.
  */
 export function redrawTabStackColor(element: HTMLElement, className: string, tabStack: ITabStack | undefined): void {
 	element.classList.toggle(className, !!tabStack);
@@ -146,11 +90,8 @@ export function redrawTabStackColor(element: HTMLElement, className: string, tab
 }
 
 /**
- * The tab stacks of a tab bar: it keeps the tabs container in the order of
- * the editors, with a header before the tabs of each tab stack and the tabs
- * of collapsed tab stacks detached, creates and redraws the headers with
- * their input, context menu and drag, marks the tabs of tab stacks, and
- * shows the name and color bubble of a tab stack under its header.
+ * The tab stacks of a tab bar: their headers and bubbles, and the tabs container kept in the order
+ * of the editors, with the tabs of collapsed tab stacks detached.
  */
 export class TabStacksControl extends Disposable implements ITabsDropHandlerTabStacks {
 
@@ -168,70 +109,45 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 		@IHoverService private readonly hoverService: IHoverService,
 		@IInstantiationService private readonly instantiationService: IInstantiationService,
 		@IThemeService private readonly themeService: IThemeService,
+		@IAccessibilityService private readonly accessibilityService: IAccessibilityService,
 	) {
 		super();
 
-		// Block the next reveal of the active tab when an action of the menu of a
-		// tab stack header runs, so that an action that changes the tab stack
-		// keeps the header in view. An action that ends without a layout, such as
-		// one whose input was cancelled, lifts the block again
+		// An action of the menu of a header keeps the header in view rather than revealing the active tab
 		this._register(this.tabStackHeaderMenuActionRunner.onWillRun(() => this.delegate.blockRevealActiveTabOnce()));
 		this._register(this.tabStackHeaderMenuActionRunner.onDidRun(() => this.delegate.unblockRevealActiveTabUnlessLayoutPending()));
 	}
 
-	/**
-	 * Returns the tab stack of the editor when tab stacks are shown.
-	 */
 	getShownTabStack(editor: EditorInput): ITabStack | undefined {
 		return isTabStacksEnabled(this.groupsView.partOptions) ? this.tabsModel.getTabStack(editor) : undefined;
 	}
 
-	/**
-	 * Returns the tab stack of the group with the id, if any.
-	 */
 	findTabStack(tabStackId: TabStackId): ITabStack | undefined {
 		return this.groupView.tabStacks.find(tabStack => tabStack.id === tabStackId);
 	}
 
-	/**
-	 * Returns the header of the tab stack, if it has one.
-	 */
 	findTabStackHeader(tabStackId: TabStackId): HTMLElement | undefined {
 		return this.tabStackHeaders.get(tabStackId)?.element;
 	}
 
-	/**
-	 * Returns the tab stack whose header is dragged, if any.
-	 */
 	getDraggedTabStack(): IDraggedTabStack | undefined {
 		const [draggedTabStack] = this.tabStackTransfer.getData(DraggedTabStackIdentifier.prototype) ?? [];
 
 		return draggedTabStack;
 	}
 
-	/**
-	 * Ends the drag of a tab stack header, such as once it dropped.
-	 */
 	clearDraggedTabStack(): void {
 		this.tabStackTransfer.clearData(DraggedTabStackIdentifier.prototype);
 	}
 
-	/**
-	 * Removes and disposes all tab stack headers, such as once no tab is left.
-	 */
 	clearTabStackHeaders(): void {
 		this.tabStackHeaders.clearAndDisposeAll();
 	}
 
-	/**
-	 * Marks the tab of the editor as a member of the tab stack of the editor,
-	 * in its color and with an indicator, while tab stacks are shown.
-	 */
 	redrawTabStackMembership(editor: EditorInput, tabContainer: HTMLElement): void {
 		const tabStack = this.getShownTabStack(editor);
 
-		// Only the tabs of a tab stack have an indicator. It is appended after the
-		// children that a tab is created with, so it is the last child of the tab
+		// The indicator is appended after the children that a tab is created with, so it stays the last child
 		const indicator = tabContainer.lastElementChild?.classList.contains('tab-stack-indicator') ? tabContainer.lastElementChild : undefined;
 
 		redrawTabStackColor(tabContainer, 'tab-stack-member', tabStack);
@@ -244,14 +160,9 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 		}
 	}
 
-	/**
-	 * Returns the accessible name of the tab of the editor, which also names
-	 * the tab stack of the editor when tab stacks are shown.
-	 */
 	getTabAriaLabel(editor: EditorInput, ariaLabel: string): string {
 
-		// The tab stack is looked up by editor because the index of a tab is
-		// relative to the tabs of this tab bar, not to the editors of the group
+		// Look up by editor, since the index of a tab is relative to this tab bar, not to the group
 		const tabStack = this.getShownTabStack(editor);
 		if (!tabStack) {
 			return ariaLabel;
@@ -263,14 +174,8 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 	}
 
 	/**
-	 * Puts the tabs and tab stack headers into the tabs container in the order
-	 * of the editors: a header before the first tab of each tab stack, then its
-	 * tabs unless the tab stack is collapsed. The tabs of a collapsed tab stack
-	 * are detached rather than hidden, so that sibling and position based code
-	 * and CSS only see what is shown. When no tab stack is shown, a tabs
-	 * container that already holds only the tabs in the order of the editors is
-	 * left unchanged; otherwise stale headers are removed and detached tabs are
-	 * put back.
+	 * Puts the tabs and tab stack headers in the order of the editors, detaching the tabs of collapsed
+	 * tab stacks so that sibling and position based code and CSS only see what is shown.
 	 */
 	reconcileTabStackSlots(): void {
 		const tabsContainer = this.delegate.getTabsContainer();
@@ -278,9 +183,15 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 			return; // an open or close of a tab is pending, which redraws all tabs once done
 		}
 
-		// While editors of a tab stack move one after the other they can be
-		// apart, so only the first editor of a tab stack gets its header
+		// Only a collapsed tab stack detaches tabs, and it has a header
 		const showTabStacks = isTabStacksEnabled(this.groupsView.partOptions);
+		if (this.tabStackHeaders.size === 0 && (!showTabStacks || this.groupView.tabStacks.length === 0)) {
+			return;
+		}
+
+		const focused = isAncestorOfActiveElement(tabsContainer) ? getActiveElement() : null;
+
+		// Editors of a tab stack can be apart while they move one by one, so only the first gets a header
 		const shownTabStacks = new Set<TabStackId>();
 		const slots: HTMLElement[] = [];
 		this.tabsModel.getEditors(EditorsOrder.SEQUENTIAL).forEach((editor, tabIndex) => {
@@ -301,7 +212,6 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 			}
 		}
 
-		// Move children into place, keeping the Add Tab control last
 		const shownSlots = new Set<Element>(slots);
 		let child = tabsContainer.firstElementChild;
 		for (const slot of slots) {
@@ -314,6 +224,27 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 		}
 
 		this.detachUnshownSlots(child, shownSlots);
+
+		// Detaching or moving the focused tab or tab stack header drops the focus
+		if (focused && !isAncestorOfActiveElement(tabsContainer)) {
+			this.restoreTabsFocus(tabsContainer, focused);
+		}
+	}
+
+	private restoreTabsFocus(tabsContainer: HTMLElement, focused: Element): void {
+		if (isHTMLElement(focused) && tabsContainer.contains(focused)) {
+			focused.focus({ preventScroll: true });
+
+			return;
+		}
+
+		const activeEditor = this.tabsModel.activeEditor;
+		const activeTab = activeEditor ? this.delegate.tabs[this.tabsModel.indexOf(activeEditor)] : undefined;
+		if (activeTab?.isConnected) {
+			activeTab.focus({ preventScroll: true });
+		} else {
+			this.groupView.focus();
+		}
 	}
 
 	/**
@@ -371,8 +302,7 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 	}
 
 	/**
-	 * Registers the hover and the mouse, touch, keyboard and drag and drop
-	 * input of a tab stack header, which look up the tab stack by its id
+	 * Registers the input of a tab stack header, whose listeners look up the tab stack by its id
 	 * whenever they run.
 	 */
 	private registerTabStackHeaderListeners(element: HTMLElement, tabStackId: TabStackId, tabsScrollbar: ScrollableElement): IDisposable {
@@ -441,10 +371,6 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 		return disposables;
 	}
 
-	/**
-	 * Registers dragging a tab stack header to move its tab stack, and
-	 * dropping before or after the header.
-	 */
 	private registerTabStackHeaderDragAndDrop(element: HTMLElement, tabStackId: TabStackId): IDisposable {
 		const slot: TabsDropSlot = { kind: 'tabStackHeader', element, tabStack: tabStackId };
 
@@ -461,9 +387,8 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 	}
 
 	/**
-	 * Starts to drag the tab stack of a header, which only the tabs of its group
-	 * take: it carries no resources for the editor area and other windows, and
-	 * only on Firefox a text that text inputs can take.
+	 * Starts to drag the tab stack of a header without resources, so that only the tabs of its group
+	 * take it.
 	 */
 	private onTabStackHeaderDragStart(e: DragEvent, tabStackId: TabStackId, header: HTMLElement): void {
 		const tabStack = this.findTabStack(tabStackId);
@@ -518,10 +443,6 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 			: localize('unnamedTabStackHeaderAriaLabel', "unnamed tab stack, {0} editors", count);
 	}
 
-	/**
-	 * Returns the hover of a tab stack header, which names the tab stack like
-	 * its chip does and tells how many editors it has.
-	 */
 	private getTabStackHeaderHover(tabStack: ITabStack): string {
 		const count = tabStack.editors.length;
 		if (tabStack.label) {
@@ -536,13 +457,11 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 	}
 
 	/**
-	 * Returns black or white, whichever contrasts more with the tab stack
-	 * color shown over the tabs background, or `undefined` when the theme has
-	 * no value for a preset color. No single theme color contrasts with every
-	 * tab stack color, least of all with custom colors.
+	 * Returns black or white, whichever contrasts more with the tab stack color over the tabs
+	 * background, since no single theme color contrasts with every tab stack color.
 	 */
 	private getTabStackForeground(color: TabStackColor): string | undefined {
-		const tabStackColor = isTabStackPresetColor(color) ? this.themeService.getColorTheme().getColor(TAB_STACK_COLOR_IDS[color]) : Color.fromHex(color);
+		const tabStackColor = isCustomTabStackColor(color) ? Color.fromHex(color) : this.themeService.getColorTheme().getColor(TAB_STACK_COLOR_IDS[color]);
 		if (!tabStackColor) {
 			return undefined;
 		}
@@ -559,21 +478,17 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 			return;
 		}
 
-		// Keep the header where it is unless collapsing makes another editor
-		// active, which is then revealed
+		// Keep the header in place unless collapsing activates another editor, which is then revealed
 		const collapsesActiveEditor = !tabStack.collapsed && tabStack.editors.some(editor => this.tabsModel.isActive(editor));
 		if (!collapsesActiveEditor) {
 			this.delegate.blockRevealActiveTabOnce();
 		}
 
-		this.groupView.updateTabStack(tabStackId, { collapsed: !tabStack.collapsed });
+		setTabStackCollapsed(this.groupView, tabStackId, !tabStack.collapsed, this.accessibilityService);
 	}
 
 	/**
-	 * Opens the name and color bubble of the tab stack under its header, with
-	 * `focus` focused, when the tabs show that header.
-	 *
-	 * @returns whether the bubble opened.
+	 * Opens the name and color bubble under the header of the tab stack, if the tabs show that header.
 	 */
 	editTabStack(tabStackId: TabStackId, focus?: TabStackEditorFocus): boolean {
 		const header = this.tabStackHeaders.get(tabStackId);
@@ -604,15 +519,11 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 	}
 
 	/**
-	 * Runs a change for the name and color bubble of a tab stack, keeping the
-	 * tabs scrolled where they are rather than revealing the active tab, so
-	 * that the bubble stays under the header.
+	 * Runs a change without revealing the active tab, so that the bubble stays under the header.
 	 */
 	private withoutRevealingActiveTab(change: () => void): void {
 		this.delegate.blockRevealActiveTabOnce();
 		change();
-
-		// A change that ends without a layout lifts the block again
 		this.delegate.unblockRevealActiveTabUnlessLayoutPending();
 	}
 
@@ -642,10 +553,6 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 		});
 	}
 
-	/**
-	 * Moves the open name and color bubble of a tab stack under its header
-	 * again, after a layout or a scroll of the tabs moved the header.
-	 */
 	layoutTabStackBubbles(): void {
 		for (const header of this.tabStackHeaders.values()) {
 			header.bubble.value?.layout();
