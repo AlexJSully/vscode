@@ -42,8 +42,6 @@ export const CONNECTED_EDITOR_TABS_SELECTOR = `.${CONNECTED_EDITOR_TABS_CLASS}`;
  */
 export const EditorTabStackContextMenuId = new MenuId('EditorTabStackContext');
 
-export const EditorTabStackSubmenuId = new MenuId('EditorTabStackSubmenu');
-
 export const DEFAULT_EDITOR_PART_OPTIONS: IEditorPartOptions = {
 	showTabs: 'multiple',
 	highlightModifiedTabs: false,

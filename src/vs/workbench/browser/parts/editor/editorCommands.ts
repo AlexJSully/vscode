@@ -46,7 +46,7 @@ import { IWorkingCopyEditorService } from '../../../services/workingCopy/common/
 import { IWorkingCopyService } from '../../../services/workingCopy/common/workingCopyService.js';
 import { DIFF_FOCUS_OTHER_SIDE, DIFF_FOCUS_PRIMARY_SIDE, DIFF_FOCUS_SECONDARY_SIDE, registerDiffEditorCommands } from './diffEditorCommands.js';
 import { IResolvedEditorCommandsContext, resolveCommandsContext, resolveTabStack, resolveTabStackEditors, resolveTabStackGroupedEditors } from './editorCommandsContext.js';
-import { EditorTabStackSubmenuId, getMoveTabIndex, getMoveTabsRunIndex, moveEditorsByTabWithTabStacks, prepareMoveCopyEditors, setTabStackCollapsed } from './editor.js';
+import { getMoveTabIndex, getMoveTabsRunIndex, moveEditorsByTabWithTabStacks, prepareMoveCopyEditors, setTabStackCollapsed } from './editor.js';
 import { IRange } from '../../../../editor/common/core/range.js';
 import { addEditorsToTabStackAndEditNew, changeTabStackColor, expandTabStack, pickTabStack, renameTabStack } from './tabStackPickers.js';
 
@@ -1856,14 +1856,15 @@ function registerTabStackCommands(): void {
 }
 
 /**
- * Registers the "Tab Stack" submenu of the tab context menu with its commands.
+ * Registers the tab stack commands in the tab context menu, each where it applies.
  */
-export function registerTabStackSubmenu(): IDisposable {
+export function registerTabStackContextMenuItems(): IDisposable {
+	const notSticky = ContextKeyExpr.and(TabStacksEnabledContext, ActiveEditorStickyContext.toNegated());
+
 	return MenuRegistry.appendMenuItems([
-		{ id: MenuId.EditorTitleContext, item: { submenu: EditorTabStackSubmenuId, title: localize('tabStack', "Tab Stack"), group: '3_preview', order: 30, when: ContextKeyExpr.and(TabStacksEnabledContext, ActiveEditorStickyContext.toNegated()) } },
-		{ id: EditorTabStackSubmenuId, item: { command: { id: ADD_EDITOR_TO_NEW_TAB_STACK_COMMAND_ID, title: localize('addToNewTabStack', "Add to New Tab Stack") }, group: '1_tabStack', order: 10 } },
-		{ id: EditorTabStackSubmenuId, item: { command: { id: ADD_EDITOR_TO_TAB_STACK_COMMAND_ID, title: localize('addToTabStack', "Add to Tab Stack...") }, group: '1_tabStack', order: 20, when: EditorGroupHasTabStacksContext } },
-		{ id: EditorTabStackSubmenuId, item: { command: { id: REMOVE_EDITOR_FROM_TAB_STACK_COMMAND_ID, title: localize('removeFromTabStack', "Remove from Tab Stack") }, group: '1_tabStack', order: 30, when: ActiveEditorInTabStackContext } }
+		{ id: MenuId.EditorTitleContext, item: { command: { id: ADD_EDITOR_TO_NEW_TAB_STACK_COMMAND_ID, title: localize('addToNewTabStack', "Add to New Tab Stack") }, group: '3_preview', order: 30, when: notSticky } },
+		{ id: MenuId.EditorTitleContext, item: { command: { id: ADD_EDITOR_TO_TAB_STACK_COMMAND_ID, title: localize('addToTabStack', "Add to Tab Stack...") }, group: '3_preview', order: 31, when: ContextKeyExpr.and(notSticky, EditorGroupHasTabStacksContext) } },
+		{ id: MenuId.EditorTitleContext, item: { command: { id: REMOVE_EDITOR_FROM_TAB_STACK_COMMAND_ID, title: localize('removeFromTabStack', "Remove from Tab Stack") }, group: '3_preview', order: 32, when: ContextKeyExpr.and(TabStacksEnabledContext, ActiveEditorInTabStackContext) } }
 	]);
 }
 

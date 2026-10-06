@@ -14,11 +14,11 @@ import { mock } from '../../../../../base/test/common/mock.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
 import { TreeViewsDnDService } from '../../../../../editor/common/services/treeViewsDnd.js';
 import { ITreeViewsDnDService } from '../../../../../editor/common/services/treeViewsDndService.js';
-import { IMenu, IMenuService, isIMenuItem, isISubmenuItem, MenuId, MenuItemAction, MenuRegistry } from '../../../../../platform/actions/common/actions.js';
+import { IMenu, IMenuService, isISubmenuItem, MenuId, MenuItemAction, MenuRegistry } from '../../../../../platform/actions/common/actions.js';
 import { ICommandActionTitle } from '../../../../../platform/action/common/action.js';
 import { ContextKeyExpression, ContextKeyValue } from '../../../../../platform/contextkey/common/contextkey.js';
-import { DEFAULT_EDITOR_PART_OPTIONS, EditorTabStackContextMenuId, EditorTabStackSubmenuId, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView } from '../../../../browser/parts/editor/editor.js';
-import { registerTabStackSubmenu } from '../../../../browser/parts/editor/editorCommands.js';
+import { DEFAULT_EDITOR_PART_OPTIONS, EditorTabStackContextMenuId, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView } from '../../../../browser/parts/editor/editor.js';
+import { registerTabStackContextMenuItems } from '../../../../browser/parts/editor/editorCommands.js';
 import { ActiveEditorInTabStackContext, ActiveEditorStickyContext, EditorGroupHasTabStacksContext, EditorTabsVisibleContext } from '../../../../common/contextkeys.js';
 import { MultiEditorTabsControl } from '../../../../browser/parts/editor/multiEditorTabsControl.js';
 import { MultiRowEditorControl } from '../../../../browser/parts/editor/multiRowEditorTabsControl.js';
@@ -2822,46 +2822,30 @@ suite('MultiEditorTabsControl', () => {
 		assert.deepStrictEqual(menus, [EditorTabStackContextMenuId.id]);
 	});
 
-	test('the context menu of a tab gathers the tab stack commands in a Tab Stack submenu after Pin, shown for a tab that is not pinned while tab stacks are enabled', () => {
-		const itemsBefore = new Set([...MenuRegistry.getMenuItems(MenuId.EditorTitleContext), ...MenuRegistry.getMenuItems(EditorTabStackSubmenuId)]);
-		disposables.add(registerTabStackSubmenu());
-		const registeredItems = (menu: MenuId) => MenuRegistry.getMenuItems(menu).filter(item => !itemsBefore.has(item));
+	test('the context menu of a tab shows the tab stack commands after Pin, each only where it applies, for a tab that is not pinned while tab stacks are enabled', () => {
+		const itemsBefore = new Set(MenuRegistry.getMenuItems(MenuId.EditorTitleContext));
+		disposables.add(registerTabStackContextMenuItems());
 		const enabled: Record<string, ContextKeyValue> = { 'config.workbench.editor.enableTabStacks': true, [EditorTabsVisibleContext.key]: true };
 		const isShown = (when: ContextKeyExpression | undefined, keys: Record<string, ContextKeyValue>) => when?.evaluate({ getValue: <T extends ContextKeyValue = ContextKeyValue>(key: string) => keys[key] as T | undefined }) ?? true;
 		const title = (value: string | ICommandActionTitle) => typeof value === 'string' ? value : value.value;
 
-		assert.deepStrictEqual({
-			tabContextMenu: registeredItems(MenuId.EditorTitleContext).map(item => ({
-				item: isISubmenuItem(item) ? `submenu ${item.submenu.id}: ${title(item.title)}` : `command ${item.command.id}: ${title(item.command.title)}`,
-				group: item.group,
-				order: item.order,
-				shownFor: {
-					tab: isShown(item.when, enabled),
-					pinnedTab: isShown(item.when, { ...enabled, [ActiveEditorStickyContext.key]: true }),
-					tabStacksDisabled: isShown(item.when, { ...enabled, 'config.workbench.editor.enableTabStacks': false }),
-					tabsNotShownAsMultiple: isShown(item.when, { ...enabled, [EditorTabsVisibleContext.key]: false }),
-				},
-			})),
-			tabStackSubmenu: registeredItems(EditorTabStackSubmenuId).filter(isIMenuItem).map(item => ({
-				item: `command ${item.command.id}: ${title(item.command.title)}`,
-				group: item.group,
-				order: item.order,
-				shownFor: {
-					tab: isShown(item.when, enabled),
-					tabOfGroupWithTabStacks: isShown(item.when, { ...enabled, [EditorGroupHasTabStacksContext.key]: true }),
-					tabInTabStack: isShown(item.when, { ...enabled, [EditorGroupHasTabStacksContext.key]: true, [ActiveEditorInTabStackContext.key]: true }),
-				},
-			})),
-		}, {
-			tabContextMenu: [
-				{ item: 'submenu EditorTabStackSubmenu: Tab Stack', group: '3_preview', order: 30, shownFor: { tab: true, pinnedTab: false, tabStacksDisabled: false, tabsNotShownAsMultiple: false } },
-			],
-			tabStackSubmenu: [
-				{ item: 'command workbench.action.addEditorToNewTabStack: Add to New Tab Stack', group: '1_tabStack', order: 10, shownFor: { tab: true, tabOfGroupWithTabStacks: true, tabInTabStack: true } },
-				{ item: 'command workbench.action.addEditorToTabStack: Add to Tab Stack...', group: '1_tabStack', order: 20, shownFor: { tab: false, tabOfGroupWithTabStacks: true, tabInTabStack: true } },
-				{ item: 'command workbench.action.removeEditorFromTabStack: Remove from Tab Stack', group: '1_tabStack', order: 30, shownFor: { tab: false, tabOfGroupWithTabStacks: false, tabInTabStack: true } },
-			],
-		});
+		assert.deepStrictEqual(MenuRegistry.getMenuItems(MenuId.EditorTitleContext).filter(item => !itemsBefore.has(item)).map(item => ({
+			item: isISubmenuItem(item) ? `submenu ${item.submenu.id}: ${title(item.title)}` : `command ${item.command.id}: ${title(item.command.title)}`,
+			group: item.group,
+			order: item.order,
+			shownFor: {
+				tab: isShown(item.when, enabled),
+				tabOfGroupWithTabStacks: isShown(item.when, { ...enabled, [EditorGroupHasTabStacksContext.key]: true }),
+				tabInTabStack: isShown(item.when, { ...enabled, [EditorGroupHasTabStacksContext.key]: true, [ActiveEditorInTabStackContext.key]: true }),
+				pinnedTab: isShown(item.when, { ...enabled, [EditorGroupHasTabStacksContext.key]: true, [ActiveEditorStickyContext.key]: true }),
+				tabStacksDisabled: isShown(item.when, { ...enabled, 'config.workbench.editor.enableTabStacks': false }),
+				tabsNotShownAsMultiple: isShown(item.when, { ...enabled, [EditorTabsVisibleContext.key]: false }),
+			},
+		})), [
+			{ item: 'command workbench.action.addEditorToNewTabStack: Add to New Tab Stack', group: '3_preview', order: 30, shownFor: { tab: true, tabOfGroupWithTabStacks: true, tabInTabStack: true, pinnedTab: false, tabStacksDisabled: false, tabsNotShownAsMultiple: false } },
+			{ item: 'command workbench.action.addEditorToTabStack: Add to Tab Stack...', group: '3_preview', order: 31, shownFor: { tab: false, tabOfGroupWithTabStacks: true, tabInTabStack: true, pinnedTab: false, tabStacksDisabled: false, tabsNotShownAsMultiple: false } },
+			{ item: 'command workbench.action.removeEditorFromTabStack: Remove from Tab Stack', group: '3_preview', order: 32, shownFor: { tab: false, tabOfGroupWithTabStacks: false, tabInTabStack: true, pinnedTab: false, tabStacksDisabled: false, tabsNotShownAsMultiple: false } },
+		]);
 	});
 
 	test('with tab stacks disabled, a drag over the tabs shows the drop between the tabs next to it, and a drag of files enters as a copy while one of tabs leaves the effect to the browser', async () => {
