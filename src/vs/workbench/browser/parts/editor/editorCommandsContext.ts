@@ -9,8 +9,10 @@ import { URI } from '../../../../base/common/uri.js';
 import { IListService } from '../../../../platform/list/browser/listService.js';
 import { IEditorCommandsContext, isEditorCommandsContext, IEditorIdentifier, isEditorIdentifier } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
+import { ITabStack } from '../../../common/editor/editorGroupModel.js';
 import { IEditorGroup, IEditorGroupsService, isEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
+import { isTabStacksEnabled } from './editor.js';
 
 export interface IResolvedEditorCommandsContext {
 	readonly groupedEditors: {
@@ -55,6 +57,65 @@ export function resolveCommandsContext(commandArgs: unknown[], editorService: IE
 	}
 
 	return resolvedContext;
+}
+
+interface IResolvedTabStackEditors {
+	readonly group: IEditorGroup;
+	readonly editors: readonly EditorInput[];
+}
+
+interface IResolvedTabStack {
+	readonly group: IEditorGroup;
+	readonly tabStack: ITabStack;
+	readonly editors: EditorInput[];
+}
+
+function isTabStacksEnabledInGroup(group: IEditorGroup, editorGroupsService: IEditorGroupsService): boolean {
+	return isTabStacksEnabled(editorGroupsService.getPart(group).partOptions);
+}
+
+/**
+ * Returns the editors of the first group of the context without the sticky editors, since a tab
+ * stack belongs to one group and never holds sticky editors.
+ */
+export function resolveTabStackEditors(context: IResolvedEditorCommandsContext, editorGroupsService: IEditorGroupsService): IResolvedTabStackEditors | undefined {
+	const groupContext = context.groupedEditors[0];
+	if (!groupContext || !isTabStacksEnabledInGroup(groupContext.group, editorGroupsService)) {
+		return undefined;
+	}
+
+	const editors = groupContext.editors.filter(editor => !groupContext.group.isSticky(editor));
+	if (editors.length === 0) {
+		return undefined;
+	}
+
+	return { group: groupContext.group, editors };
+}
+
+/**
+ * Returns the grouped editors of the context in groups that show tab stacks.
+ */
+export function resolveTabStackGroupedEditors(context: IResolvedEditorCommandsContext, editorGroupsService: IEditorGroupsService): IResolvedEditorCommandsContext['groupedEditors'] {
+	return context.groupedEditors.filter(({ group }) => isTabStacksEnabledInGroup(group, editorGroupsService));
+}
+
+/**
+ * Returns the tab stack of the editor that the command was invoked on, such as the right-clicked
+ * tab, or of the active editor without editor context.
+ */
+export function resolveTabStack(context: IResolvedEditorCommandsContext, editorGroupsService: IEditorGroupsService): IResolvedTabStack | undefined {
+	const groupContext = context.groupedEditors[0];
+	const editor = groupContext?.editors[0];
+	if (!groupContext || !editor || !isTabStacksEnabledInGroup(groupContext.group, editorGroupsService)) {
+		return undefined;
+	}
+
+	const tabStack = groupContext.group.getTabStack(editor);
+	if (!tabStack) {
+		return undefined;
+	}
+
+	return { group: groupContext.group, tabStack, editors: [...tabStack.editors] };
 }
 
 function getCommandsContext(commandArgs: unknown[], editorService: IEditorService, editorGroupsService: IEditorGroupsService, listService: IListService): IEditorCommandsContext[] {

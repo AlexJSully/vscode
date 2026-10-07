@@ -23,7 +23,8 @@ import { EditorResolution, IResourceEditorInput } from '../../../../../platform/
 import { ICodeEditorViewState, IDiffEditorViewState } from '../../../../../editor/common/editorCommon.js';
 import { Position } from '../../../../../editor/common/core/position.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { DEFAULT_EDITOR_PART_OPTIONS } from '../../../../browser/parts/editor/editor.js';
+import { DEFAULT_EDITOR_PART_OPTIONS, getEditorPartOptions, getMoveTabsRunIndex, isTabStacksEnabled } from '../../../../browser/parts/editor/editor.js';
+import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
 
 suite('Workbench editor utils', () => {
 
@@ -425,6 +426,59 @@ suite('Workbench editor utils', () => {
 
 		enforcedOverride.dispose();
 		assert.strictEqual(part.partOptions.tabActionReserveSpace, false);
+	});
+
+	test('tab stacks are off in the default part options, invalid values fall back to it, and tab stacks are only enabled with multiple tabs', () => {
+		const themeService = new TestThemeService();
+		const getOptions = (editor: object) => getEditorPartOptions(new TestConfigurationService({ workbench: { editor } }), themeService);
+
+		assert.deepStrictEqual({
+			default: DEFAULT_EDITOR_PART_OPTIONS.enableTabStacks,
+			configured: getOptions({ enableTabStacks: true }).enableTabStacks,
+			invalid: getOptions({ enableTabStacks: 'yes' }).enableTabStacks,
+			enabledWithMultipleTabs: isTabStacksEnabled(getOptions({ enableTabStacks: true })),
+			enabledWithSingleTab: isTabStacksEnabled(getOptions({ enableTabStacks: true, showTabs: 'single' })),
+			enabledWithoutTabs: isTabStacksEnabled(getOptions({ enableTabStacks: true, showTabs: 'none' }))
+		}, {
+			default: false,
+			configured: true,
+			invalid: false,
+			enabledWithMultipleTabs: true,
+			enabledWithSingleTab: false,
+			enabledWithoutTabs: false
+		});
+	});
+
+	test('editors moved by tab as one run start at the lowest index that moving them one after the other gives, unless they are not adjacent or sticky', async () => {
+		const part = await createEditorPart(instantiationService, disposables);
+		const group = part.activeGroup;
+
+		const editors = ['sticky', '1', '2', '3', '4'].map(name => disposables.add(new TestFileEditorInput(URI.file(`/${name}`), TEST_EDITOR_ID)));
+		const [sticky, first, second, third] = editors;
+		for (const editor of editors) {
+			await group.openEditor(editor, { pinned: true, sticky: editor === sticky });
+		}
+
+		// Editors are given in the order the command moves them, rightmost first when moving right
+		const runIndex = (to: string, value: number | undefined, ...movedEditors: TestFileEditorInput[]) => getMoveTabsRunIndex({ to, value }, group, movedEditors);
+
+		assert.deepStrictEqual({
+			right: runIndex('right', 1, third, second),
+			left: runIndex('left', 1, second, third),
+			last: runIndex('last', undefined, second, third),
+			center: runIndex('center', undefined, second, third),
+			notAdjacent: runIndex('right', 1, third, first),
+			withStickyEditor: runIndex('left', 1, sticky, first),
+			intoStickyEditors: runIndex('first', undefined, third, second)
+		}, {
+			right: 3,
+			left: 1,
+			last: 3,
+			center: 2,
+			notAdjacent: undefined,
+			withStickyEditor: undefined,
+			intoStickyEditors: undefined
+		});
 	});
 
 	test('editor tab mode class follows configured and enforced part options', async () => {

@@ -15,8 +15,9 @@ import { IEditorPartOptions } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { DisposableStore, MutableDisposable } from '../../../../base/common/lifecycle.js';
 import { MultiRowEditorControl } from './multiRowEditorTabsControl.js';
-import { IReadonlyEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
+import { IReadonlyEditorGroupModel, TabStackId } from '../../../common/editor/editorGroupModel.js';
 import { NoEditorTabsControl } from './noEditorTabsControl.js';
+import { TabStackEditorFocus } from '../../../services/editor/common/editorGroupsService.js';
 import { EditorHeaderControl } from './editorHeaderControl.js';
 
 export interface IEditorTitleControlDimensions {
@@ -145,6 +146,14 @@ export class EditorTitleControl extends Themable {
 
 	updateEditorSelections(): void {
 		this.editorTabsControl.updateEditorSelections();
+	}
+
+	updateTabStacks(): void {
+		this.editorTabsControl.updateTabStacks();
+	}
+
+	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus, cancelCreation?: () => void): boolean {
+		return this.editorTabsControl.editTabStack(tabStack, focus, cancelCreation);
 	}
 
 	updateEditorLabel(editor: EditorInput): void {

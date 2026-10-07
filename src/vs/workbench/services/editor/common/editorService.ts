@@ -133,6 +133,13 @@ export interface IOpenEditorsOptions {
 	 * that are potentially not inside the workspace.
 	 */
 	readonly validateTrust?: boolean;
+
+	/**
+	 * Called once, after trust is validated and the editors are resolved, right
+	 * before any of them opens. The options it returns apply to every editor,
+	 * which open without them if it throws.
+	 */
+	readonly beforeOpen?: () => IEditorOptions | undefined;
 }
 
 export interface IEditorsChangeEvent {

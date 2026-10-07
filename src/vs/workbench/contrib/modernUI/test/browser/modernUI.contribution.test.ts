@@ -40,6 +40,7 @@ import '../../../../browser/media/floatingPanels.css';
 import '../../../../../base/browser/ui/menu/menubar.css';
 import '../../../../browser/parts/activitybar/media/activityaction.css';
 import '../../../../browser/parts/editor/media/modalEditorPart.css';
+import '../../../../browser/parts/editor/media/multieditortabscontrol.css';
 import '../../../../browser/parts/media/paneCompositePart.css';
 import '../../../../browser/parts/statusbar/media/statusbarpart.css';
 import '../../../../browser/parts/titlebar/media/menubarControl.css';
@@ -93,6 +94,19 @@ class ModernUITestAuxiliaryWindowService extends mock<IAuxiliaryWindowService>()
 	override getWindow(): IAuxiliaryWindow {
 		return this.auxiliaryWindow;
 	}
+}
+
+/**
+ * The elements of a tab strip with a tab stack whose first tab is active.
+ */
+interface ITabStackElements {
+	readonly root: HTMLElement;
+	readonly tabsAndActions: HTMLElement;
+	readonly header: HTMLElement;
+	readonly activeTab: HTMLElement;
+	readonly activeFill: HTMLElement;
+	readonly activeIndicator: HTMLElement;
+	readonly nextIndicator: HTMLElement;
 }
 
 function appendElement(parent: HTMLElement, className: string): HTMLElement {
@@ -2817,6 +2831,161 @@ suite('ModernUIContribution', () => {
 		});
 	});
 
+	test('starts a connected row after a tab stack header that ends the row above', () => {
+		const root = document.createElement('div');
+		root.className = 'monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs';
+		root.style.setProperty('--vscode-strokeThickness', '1px');
+		root.style.setProperty('--vscode-cornerRadius-small', '4px');
+		document.body.appendChild(root);
+		store.add(toDisposable(() => root.remove()));
+
+		const editor = appendElement(root, 'part editor');
+		const content = appendElement(editor, 'content');
+		const group = appendElement(content, 'editor-group-container active');
+		const title = appendElement(group, 'title tabs');
+		const tabs = appendElement(title, 'tabs-container');
+		const header = appendElement(tabs, 'tab-stack-header');
+		const tab = appendElement(tabs, 'tab active');
+		const fill = appendElement(tab, 'tab-fill');
+		const edge = appendElement(tab, 'tab-connected-edge');
+		const targetWindow = getWindow(root);
+		const getLeadingEdge = (headerEndsRow: boolean) => {
+			header.classList.toggle('last-in-row', headerEndsRow);
+			return {
+				shoulder: targetWindow.getComputedStyle(fill, '::before').content,
+				mask: targetWindow.getComputedStyle(edge, '::before').content,
+				leftCorner: targetWindow.getComputedStyle(fill).borderTopLeftRadius,
+			};
+		};
+
+		assert.deepStrictEqual({
+			rowStart: getLeadingEdge(true),
+			withinRow: getLeadingEdge(false),
+		}, {
+			rowStart: { shoulder: 'none', mask: 'none', leftCorner: '0px' },
+			withinRow: { shoulder: '""', mask: '""', leftCorner: '5px' },
+		});
+	});
+
+	/**
+	 * Appends a tab strip with a tab stack header, an active tab of its tab
+	 * stack in the color `rgb(1, 2, 3)` and the next tab of its tab stack to a
+	 * root with the given classes.
+	 */
+	function appendTabStack(rootClasses: string): ITabStackElements {
+		const root = document.createElement('div');
+		root.className = `monaco-workbench modern-ui modern-ui-tabs ${rootClasses}`;
+		root.style.setProperty('--vscode-spacing-size20', '2px');
+		root.style.setProperty('--vscode-spacing-size40', '4px');
+		root.style.setProperty('--vscode-strokeThickness', '1px');
+		root.style.setProperty('--vscode-cornerRadius-small', '4px');
+		root.style.setProperty('--vscode-focusBorder', 'rgb(0, 255, 0)');
+		document.body.appendChild(root);
+		store.add(toDisposable(() => root.remove()));
+
+		const editor = appendElement(root, 'part editor');
+		const content = appendElement(editor, 'content');
+		const group = appendElement(content, 'editor-group-container active');
+		const tabsAndActions = appendElement(appendElement(group, 'title tabs'), 'tabs-and-actions-container');
+		const tabs = appendElement(tabsAndActions, 'tabs-container');
+		const header = appendElement(tabs, 'tab-stack-header');
+		const activeTab = appendElement(tabs, 'tab active tab-stack-member connected-tab-top-row');
+		const nextTab = appendElement(tabs, 'tab tab-stack-member connected-tab-top-row');
+		for (const tab of [activeTab, nextTab]) {
+			tab.style.setProperty('--tab-stack-color', 'rgb(1, 2, 3)');
+		}
+		const activeFill = appendElement(activeTab, 'tab-fill');
+		const activeIndicator = appendElement(activeTab, 'tab-stack-indicator');
+		appendElement(nextTab, 'tab-fill');
+		const nextIndicator = appendElement(nextTab, 'tab-stack-indicator');
+
+		return { root, tabsAndActions, header, activeTab, activeFill, activeIndicator, nextIndicator };
+	}
+
+	test('keeps connected shoulders clear of tab stack headers, and outlines the active tab stack member open to the document in the color of its tab stack, which the indicators next to it meet', () => {
+		const { root, tabsAndActions, header, activeTab, activeFill, activeIndicator, nextIndicator } = appendTabStack('modern-ui-connected-editor-tabs');
+		const targetWindow = getWindow(root);
+		const headerStyle = targetWindow.getComputedStyle(header);
+		const shoulderWidth = targetWindow.getComputedStyle(activeFill, '::before').width;
+		const describeActiveTab = () => {
+			const fillStyle = targetWindow.getComputedStyle(activeFill);
+			return {
+				outline: [fillStyle.borderTopColor, fillStyle.borderLeftColor, fillStyle.borderRightColor, fillStyle.borderBottomColor],
+				shoulders: [targetWindow.getComputedStyle(activeFill, '::before').borderBottomColor, targetWindow.getComputedStyle(activeFill, '::after').borderBottomColor],
+			};
+		};
+		const describeNextIndicator = () => {
+			const indicatorStyle = targetWindow.getComputedStyle(nextIndicator);
+			return `${indicatorStyle.display} ${indicatorStyle.bottom} ${indicatorStyle.zIndex}`;
+		};
+		const single = describeActiveTab();
+		const nextIndicatorBelowTabs = describeNextIndicator();
+		activeTab.classList.add('multi-selected', 'tab-border-top');
+		tabsAndActions.classList.add('wrapping');
+
+		assert.deepStrictEqual({
+			headerPadding: [headerStyle.paddingLeft, headerStyle.paddingRight],
+			activeTab: { indicator: targetWindow.getComputedStyle(activeIndicator).display, single, multiSelected: describeActiveTab() },
+			nextIndicator: { belowTabs: nextIndicatorBelowTabs, wrapped: describeNextIndicator() },
+		}, {
+			headerPadding: [shoulderWidth, shoulderWidth],
+			activeTab: {
+				indicator: 'none',
+				single: { outline: ['rgb(1, 2, 3)', 'rgb(1, 2, 3)', 'rgb(1, 2, 3)', 'rgba(0, 0, 0, 0)'], shoulders: ['rgb(1, 2, 3)', 'rgb(1, 2, 3)'] },
+				multiSelected: { outline: ['rgb(1, 2, 3)', 'rgb(1, 2, 3)', 'rgb(1, 2, 3)', 'rgba(0, 0, 0, 0)'], shoulders: ['rgb(1, 2, 3)', 'rgb(1, 2, 3)'] },
+			},
+			// Covers the separator, where the shoulders end: below the tabs, or their last row once they wrap
+			nextIndicator: { belowTabs: 'block -1px 1', wrapped: 'block 0px 1' },
+		});
+	});
+
+	test('keeps the high contrast border of the active connected tab stack member and lines its top and sides inside it in the color of its tab stack', () => {
+		const { root, activeFill, activeIndicator, nextIndicator } = appendTabStack('modern-ui-connected-editor-tabs hc-black');
+		const targetWindow = getWindow(root);
+		const fillStyle = targetWindow.getComputedStyle(activeFill);
+		const nextIndicatorStyle = targetWindow.getComputedStyle(nextIndicator);
+
+		assert.deepStrictEqual({
+			sides: [fillStyle.borderLeftColor, fillStyle.borderRightColor],
+			lining: fillStyle.boxShadow,
+			indicators: [targetWindow.getComputedStyle(activeIndicator).display, `${nextIndicatorStyle.display} ${nextIndicatorStyle.bottom} ${nextIndicatorStyle.zIndex}`],
+		}, {
+			sides: ['rgb(0, 255, 0)', 'rgb(0, 255, 0)'],
+			lining: 'rgb(1, 2, 3) 1px 0px 0px 0px inset, rgb(1, 2, 3) -1px 0px 0px 0px inset, rgb(1, 2, 3) 0px 1px 0px 0px inset',
+			indicators: ['none', 'block 0px 0'], // stays above the high contrast separator
+		});
+	});
+
+	test('underlines an active tab stack member over its pill in a connected row above the document', () => {
+		const { root, activeTab, activeFill, activeIndicator } = appendTabStack('modern-ui-connected-editor-tabs');
+		activeTab.classList.add('connected-tab-upper-row');
+		const targetWindow = getWindow(root);
+		const indicatorStyle = targetWindow.getComputedStyle(activeIndicator);
+		const followsFill = !!(activeFill.compareDocumentPosition(activeIndicator) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+		assert.deepStrictEqual({
+			display: indicatorStyle.display,
+			// Following the fill, the indicator paints over it unless the fill has the greater z-index
+			paintedOverFill: followsFill && Number(indicatorStyle.zIndex) >= Number(targetWindow.getComputedStyle(activeFill).zIndex),
+		}, { display: 'block', paintedOverFill: true });
+	});
+
+	test('outlines the active pill of a tab stack in the color of its tab stack inside the high contrast border and keeps its indicator', () => {
+		const { root, activeFill, activeIndicator } = appendTabStack('');
+		const targetWindow = getWindow(root);
+		const describePill = () => {
+			const fillStyle = targetWindow.getComputedStyle(activeFill);
+			return { outline: `${fillStyle.outlineStyle} ${fillStyle.outlineColor}`, offset: fillStyle.outlineOffset, indicator: targetWindow.getComputedStyle(activeIndicator).display };
+		};
+		const pill = describePill();
+		root.classList.add('hc-black');
+
+		assert.deepStrictEqual({ pill, highContrast: describePill() }, {
+			pill: { outline: 'solid rgb(1, 2, 3)', offset: '-1px', indicator: 'block' },
+			highContrast: { outline: 'solid rgb(1, 2, 3)', offset: '-2px', indicator: 'block' },
+		});
+	});
+
 	test('extends the connected sticky mask to the strip separator', () => {
 		const root = document.createElement('div');
 		root.className = 'monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs';
@@ -2849,6 +3018,36 @@ suite('ModernUIContribution', () => {
 			bottom: '1px',
 			height: 32,
 			separatorHeight: 1,
+		});
+	});
+
+	test('extends the pill sticky mask over the gutter below the tabs', () => {
+		const root = document.createElement('div');
+		root.className = 'monaco-workbench modern-ui modern-ui-tabs';
+		root.style.setProperty('--editor-group-tab-height', '24px');
+		document.body.appendChild(root);
+		store.add(toDisposable(() => root.remove()));
+
+		const editor = appendElement(root, 'part editor');
+		const content = appendElement(editor, 'content');
+		const group = appendElement(content, 'editor-group-container active');
+		const title = appendElement(group, 'title tabs');
+		const tabsAndActions = appendElement(title, 'tabs-and-actions-container');
+		const scrollable = appendElement(tabsAndActions, 'monaco-scrollable-element');
+		scrollable.style.position = 'relative';
+		scrollable.style.width = '250px';
+		scrollable.style.height = '32px';
+		const stickyBackground = appendElement(scrollable, 'sticky-tabs-background');
+		stickyBackground.style.width = '84px';
+		const scrollableBounds = scrollable.getBoundingClientRect();
+		const stickyBounds = stickyBackground.getBoundingClientRect();
+
+		assert.deepStrictEqual({
+			top: stickyBounds.top - scrollableBounds.top,
+			bottom: scrollableBounds.bottom - stickyBounds.bottom,
+		}, {
+			top: 0,
+			bottom: 0,
 		});
 	});
 

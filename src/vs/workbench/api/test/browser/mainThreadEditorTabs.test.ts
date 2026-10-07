@@ -94,6 +94,45 @@ suite('MainThreadEditorTabs', () => {
 		});
 	});
 
+	test('tab stack changes do not rebuild the tabs model', async () => {
+		let groupsReadCount = 0;
+		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+			override readonly activeModalEditorPart = undefined;
+			override readonly onDidAddGroup = Event.None;
+			override readonly onDidRemoveGroup = Event.None;
+			override readonly whenReady = Promise.resolve();
+			override get groups(): readonly IEditorGroup[] {
+				groupsReadCount++;
+				return [];
+			}
+		}();
+		const editorChanges = disposables.add(new Emitter<IEditorsChangeEvent>());
+		const editorService = new class extends mock<IEditorService>() {
+			override readonly onDidEditorsChange = editorChanges.event;
+		}();
+		disposables.add(new MainThreadEditorTabs(
+			SingleProxyRPCProtocol({}),
+			editorGroupsService,
+			new TestConfigurationService(),
+			new NullLogService(),
+			editorService,
+		));
+		await Promise.resolve();
+		groupsReadCount = 0;
+
+		editorChanges.fire({ groupId: 1, event: { kind: GroupModelChangeKind.TAB_STACKS } });
+		const rebuildsAfterTabStacks = groupsReadCount;
+		editorChanges.fire({ groupId: 1, event: { kind: GroupModelChangeKind.GROUP_LOCKED } });
+
+		assert.deepStrictEqual({
+			rebuildsAfterTabStacks,
+			rebuildsAfterGroupLocked: groupsReadCount,
+		}, {
+			rebuildsAfterTabStacks: 0,
+			rebuildsAfterGroupLocked: 1,
+		});
+	});
+
 	test('updating a background tab does not make it the active tab', async () => {
 		class NamedEditorInput extends TestEditorInput {
 			private _dirty = false;

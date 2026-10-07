@@ -2145,6 +2145,15 @@ export class DragAndDropObserver extends Disposable {
 			this.callbacks.onDrop?.(e);
 		}));
 	}
+
+	/**
+	 * Resets the count of drag enters and drag leaves without calling a callback, for a drop that a
+	 * child stops from reaching the element, after which the next drag would leave without `onDragLeave`.
+	 */
+	reset(): void {
+		this.counter = 0;
+		this.dragStartTime = 0;
+	}
 }
 
 /**

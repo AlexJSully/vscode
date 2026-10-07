@@ -18,6 +18,7 @@ import { FileEditorInput } from '../../../../contrib/files/browser/editors/fileE
 import { timeout } from '../../../../../base/common/async.js';
 import { FileOperationEvent, FileOperation } from '../../../../../platform/files/common/files.js';
 import { DisposableStore } from '../../../../../base/common/lifecycle.js';
+import { errorHandler, setUnexpectedErrorHandler } from '../../../../../base/common/errors.js';
 import { MockScopableContextKeyService } from '../../../../../platform/keybinding/test/common/mockKeybindingService.js';
 import { RegisteredEditorPriority } from '../../common/editorResolverService.js';
 import { WorkspaceTrustUriResponse } from '../../../../../platform/workspace/common/workspaceTrust.js';
@@ -1628,6 +1629,62 @@ suite('EditorService', () => {
 		} finally {
 			accessor.workspaceTrustRequestService.requestOpenUrisHandler = oldHandler;
 		}
+	});
+
+	test('openEditors() asks beforeOpen for the options of the editors once trust is validated, and not when trust is cancelled', async () => {
+		const [part, service, accessor] = await createEditorService();
+
+		const openedInput = createTestFileEditorInput(URI.parse('my://resource1-before-open'), TEST_EDITOR_INPUT_ID);
+		const input = createTestFileEditorInput(URI.parse('my://resource2-before-open'), TEST_EDITOR_INPUT_ID);
+		const otherInput = createTestFileEditorInput(URI.parse('my://resource3-before-open'), TEST_EDITOR_INPUT_ID);
+		await service.openEditor(openedInput, { pinned: true });
+
+		const calls: string[] = [];
+		const openWithTrust = async (response: WorkspaceTrustUriResponse) => {
+			accessor.workspaceTrustRequestService.requestOpenUrisHandler = async () => {
+				calls.push('trust');
+				return response;
+			};
+			await service.openEditors([{ editor: input, options: { pinned: true } }, { editor: otherInput, options: { pinned: true } }], undefined, {
+				validateTrust: true,
+				beforeOpen: () => {
+					calls.push('beforeOpen');
+					return { index: 0 };
+				}
+			});
+
+			return { calls: calls.splice(0), editors: part.activeGroup.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.toString()) };
+		};
+
+		assert.deepStrictEqual({ cancelled: await openWithTrust(WorkspaceTrustUriResponse.Cancel), allowed: await openWithTrust(WorkspaceTrustUriResponse.Open) }, {
+			cancelled: { calls: ['trust'], editors: ['my://resource1-before-open'] },
+			allowed: { calls: ['trust', 'beforeOpen'], editors: ['my://resource2-before-open', 'my://resource3-before-open', 'my://resource1-before-open'] }
+		});
+	});
+
+	test('openEditors() reports an error that beforeOpen throws and opens the editors without its options', async () => {
+		const [part, service] = await createEditorService();
+
+		const input = createTestFileEditorInput(URI.parse('my://resource1-before-open-error'), TEST_EDITOR_INPUT_ID);
+		const otherInput = createTestFileEditorInput(URI.parse('my://resource2-before-open-error'), TEST_EDITOR_INPUT_ID);
+
+		const originalHandler = errorHandler.getUnexpectedErrorHandler();
+		const errors: string[] = [];
+		setUnexpectedErrorHandler(error => errors.push((error as Error).message));
+		try {
+			await service.openEditors([{ editor: input, options: { pinned: true } }, { editor: otherInput, options: { pinned: true } }], undefined, {
+				beforeOpen: () => {
+					throw new Error('malformed drop');
+				}
+			});
+		} finally {
+			setUnexpectedErrorHandler(originalHandler);
+		}
+
+		assert.deepStrictEqual({ errors, editors: part.activeGroup.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.resource?.toString()) }, {
+			errors: ['malformed drop'],
+			editors: ['my://resource1-before-open-error', 'my://resource2-before-open-error']
+		});
 	});
 
 	test('close editor does not dispose when editor opened in other group', async () => {

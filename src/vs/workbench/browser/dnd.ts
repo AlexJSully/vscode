@@ -9,7 +9,8 @@ import { DragMouseEvent } from '../../base/browser/mouseEvent.js';
 import { IListDragAndDrop } from '../../base/browser/ui/list/list.js';
 import { ElementsDragAndDropData, ListViewTargetSector } from '../../base/browser/ui/list/listView.js';
 import { ITreeDragOverReaction } from '../../base/browser/ui/tree/tree.js';
-import { coalesce } from '../../base/common/arrays.js';
+import { coalesce, distinct } from '../../base/common/arrays.js';
+import { findLast } from '../../base/common/arraysFind.js';
 import { UriList, VSDataTransfer } from '../../base/common/dataTransfer.js';
 import { Emitter, Event } from '../../base/common/event.js';
 import { Disposable, DisposableStore, IDisposable, markAsSingleton } from '../../base/common/lifecycle.js';
@@ -28,13 +29,17 @@ import { Registry } from '../../platform/registry/common/platform.js';
 import { IWindowOpenable } from '../../platform/window/common/window.js';
 import { IWorkspaceContextService, hasWorkspaceFileExtension, isTemporaryWorkspace } from '../../platform/workspace/common/workspace.js';
 import { IWorkspaceFolderCreationData, IWorkspacesService } from '../../platform/workspaces/common/workspaces.js';
-import { EditorResourceAccessor, GroupIdentifier, IEditorIdentifier, isEditorIdentifier, isResourceDiffEditorInput, isResourceMergeEditorInput, isResourceSideBySideEditorInput } from '../common/editor.js';
+import { EditorResourceAccessor, EditorsOrder, GroupIdentifier, IEditorIdentifier, isEditorIdentifier, isResourceDiffEditorInput, isResourceMergeEditorInput, isResourceSideBySideEditorInput } from '../common/editor.js';
+import { DiffEditorInput } from '../common/editor/diffEditorInput.js';
+import { EditorInput } from '../common/editor/editorInput.js';
+import { SideBySideEditorInput } from '../common/editor/sideBySideEditorInput.js';
 import { IEditorGroup } from '../services/editor/common/editorGroupsService.js';
+import { IEditorResolverService } from '../services/editor/common/editorResolverService.js';
 import { IEditorService } from '../services/editor/common/editorService.js';
 import { IHostService } from '../services/host/browser/host.js';
 import { ITextFileService } from '../services/textfile/common/textfiles.js';
 import { IWorkspaceEditingService } from '../services/workspaces/common/workspaceEditing.js';
-import { IEditorOptions } from '../../platform/editor/common/editor.js';
+import { IEditorOptions, IResourceEditorInput } from '../../platform/editor/common/editor.js';
 import { mainWindow } from '../../base/browser/window.js';
 import { BroadcastDataChannel } from '../../base/browser/broadcast.js';
 
@@ -97,7 +102,7 @@ export class ResourcesDropHandler {
 	) {
 	}
 
-	async handleDrop(event: DragEvent, targetWindow: Window, resolveTargetGroup?: () => IEditorGroup | undefined, afterDrop?: (targetGroup: IEditorGroup | undefined) => void, options?: IEditorOptions): Promise<void> {
+	async handleDrop(event: DragEvent, targetWindow: Window, resolveTargetGroup?: () => IEditorGroup | undefined, afterDrop?: (targetGroup: IEditorGroup | undefined) => void, options?: IEditorOptions, beforeOpen?: () => IEditorOptions | undefined): Promise<void> {
 		const editors = await this.instantiationService.invokeFunction(accessor => extractEditorsAndFilesDropData(accessor, event));
 		if (!editors.length) {
 			return;
@@ -144,7 +149,7 @@ export class ResourcesDropHandler {
 				...options,
 				pinned: true
 			}
-		})), targetGroup, { validateTrust: true });
+		})), targetGroup, { validateTrust: true, beforeOpen });
 
 		// Finish with provided function
 		afterDrop?.(targetGroup);
@@ -197,6 +202,82 @@ export class ResourcesDropHandler {
 
 		return true;
 	}
+}
+
+/**
+ * Returns the editor of the group that opening the dropped editor opens again, as the group finds it
+ * once the dropped editor is resolved.
+ */
+export function findEditorOfDroppedEditor(group: IEditorGroup, droppedEditor: IDraggedResourceEditorInput, editorResolverService: IEditorResolverService): EditorInput | undefined {
+	const editors = group.getEditors(EditorsOrder.SEQUENTIAL);
+	if (isResourceDiffEditorInput(droppedEditor)) {
+		return editors.find(editor => editor instanceof DiffEditorInput && editor.matches(droppedEditor));
+	}
+
+	if (!droppedEditor.resource) {
+		return undefined;
+	}
+
+	const override = typeof droppedEditor.options?.override === 'string' ? droppedEditor.options.override : editorResolverService.getEditorMatches(droppedEditor.resource).defaultRule.editor.id;
+	const resolvedEditor: IResourceEditorInput = { resource: droppedEditor.resource, options: { override } };
+
+	return editors.find(editor => editor.matches(resolvedEditor))
+		?? findLast(editors, editor => editor instanceof SideBySideEditorInput && editor.primary.matches(resolvedEditor) && editor.secondary.matches(resolvedEditor));
+}
+
+/**
+ * Moves the editors of the group for the dropped editors after the first together in drop order at
+ * the index. Returns the index to open the dropped editors at, where the group then moves the editor
+ * of the first one itself.
+ */
+export function moveEditorsOfDroppedEditors(group: IEditorGroup, droppedEditors: readonly IDraggedResourceEditorInput[], index: number, editorResolverService: IEditorResolverService, sticky?: boolean): number {
+	const editorsOfDroppedEditors = droppedEditors.map(droppedEditor => findEditorOfDroppedEditor(group, droppedEditor, editorResolverService));
+	const editors = distinct(coalesce(editorsOfDroppedEditors));
+	if (editors.length === 0) {
+		return index;
+	}
+
+	const editorAfter = group.getEditors(EditorsOrder.SEQUENTIAL).slice(index).find(editor => !editors.includes(editor));
+
+	const getIndexToMoveBefore = (editor: EditorInput, nextEditor: EditorInput | undefined) => {
+		const nextIndex = nextEditor ? group.getIndexOfEditor(nextEditor) : group.count;
+
+		return group.getIndexOfEditor(editor) < nextIndex ? nextIndex - 1 : nextIndex;
+	};
+
+	// The group moves the editor of the first dropped editor when it opens it, so only the others move here
+	const firstEditor = editorsOfDroppedEditors[0];
+	const laterEditors = firstEditor ? editors.slice(1) : editors;
+
+	// Unstick editors after the first new or unsticky one, so no editor opening between them sticks
+	const firstUnstickyIndex = editorsOfDroppedEditors.findIndex(editor => !editor || !group.isSticky(editor));
+	if (!sticky && index >= group.stickyCount && firstUnstickyIndex >= 0) {
+		for (const editor of laterEditors) {
+			if (editorsOfDroppedEditors.indexOf(editor) > firstUnstickyIndex) {
+				group.unstickEditor(editor);
+			}
+		}
+	}
+
+	for (const editor of laterEditors) {
+		group.moveEditor(editor, group, { index: getIndexToMoveBefore(editor, editorAfter), sticky });
+	}
+
+	return firstEditor ? getIndexToMoveBefore(firstEditor, laterEditors.at(0) ?? editorAfter) : group.getIndexOfEditor(laterEditors[0]);
+}
+
+/**
+ * Returns a function that returns the index of a drop at `index`, before the
+ * same editor, once the editors of the group may have changed.
+ */
+export function anchorDropIndex(group: IEditorGroup, index: number): () => number {
+	const editorAfter = group.getEditorByIndex(index);
+
+	return () => {
+		const editorAfterIndex = editorAfter ? group.getIndexOfEditor(editorAfter) : group.count;
+
+		return editorAfterIndex >= 0 ? editorAfterIndex : Math.min(index, group.count);
+	};
 }
 
 export function fillEditorsDragData(accessor: ServicesAccessor, resources: URI[], event: DragMouseEvent | DragEvent, options?: { disableStandardTransfer: boolean }): void;

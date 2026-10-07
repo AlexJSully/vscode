@@ -103,6 +103,29 @@ function renderHeader(ctx: ComponentFixtureContext, breadcrumbs: boolean, primar
 	});
 }
 
+/**
+ * Renders tabs that end with a tab stack, followed by the Add Tab control,
+ * with a drop of tabs right after the last tab, inside or outside of the tab
+ * stack.
+ */
+function renderTabStackDropAtEnd(ctx: ComponentFixtureContext, inTabStack: boolean): void {
+	ctx.container.classList.add('agent-sessions-workbench', 'dock-detail-panel');
+	const auth = { label: 'Auth', color: 'pink' } as const;
+	renderEditorTabBarFixture(ctx, {
+		modernUI: true,
+		partOptions: { enableTabStacks: true },
+		editors: [
+			{ resource: URI.file('/Changes'), icon: Codicon.diffMultiple, pinned: true, active: true },
+			{ resource: URI.file('/src/auth/login.ts'), pinned: true, tabStack: auth },
+			{ resource: URI.file('/src/auth/token.ts'), pinned: true, tabStack: auth },
+		],
+		showHeader: true,
+		useModernUITabs: true,
+		headerMenuIds: { headerPrimary: emptyMenu, headerSecondary: emptyMenu, headerLayout: emptyMenu, tabsBarAddTab: addTabMenu },
+		dropAfterTab: { index: 2, inTabStack },
+	});
+}
+
 function renderConnectedCard(ctx: ComponentFixtureContext, secondTabActive = false): void {
 	ctx.container.classList.add('agent-sessions-workbench', 'dock-detail-panel');
 	renderEditorTabBarFixture(ctx, {
@@ -130,6 +153,10 @@ export default defineThemedFixtureGroup({ path: 'sessions/editorHeader/' }, {
 		render: ctx => renderConnectedCard(ctx, true),
 		additionalThemes: ['darkHighContrast', 'lightHighContrast'],
 	}),
+	// A drop over the right half of the last tab of a tab stack that ends the tabs lands inside it, so the foot of the drop marker reaches toward the Add Tab control.
+	TabStacksDropInsideEnd: defineComponentFixture({ render: ctx => renderTabStackDropAtEnd(ctx, true), additionalThemes: ['darkHighContrast', 'lightHighContrast'] }),
+	// A drop over the empty space after the tabs lands outside of the tab stack, so the drop marker at the same place has no foot.
+	TabStacksDropOutsideEnd: defineComponentFixture({ render: ctx => renderTabStackDropAtEnd(ctx, false), additionalThemes: ['darkHighContrast', 'lightHighContrast'] }),
 	FullHeader: defineComponentFixture({ render: ctx => renderHeader(ctx, true, true, true, true, 'multiple', true), additionalThemes: ['darkHighContrast', 'lightHighContrast'] }),
 	CompactFullHeader: defineComponentFixture({ render: ctx => renderHeader(ctx, true, true, true, true, 'multiple', true, 'compact'), additionalThemes: ['darkHighContrast', 'lightHighContrast'] }),
 	BreadcrumbsAndAction: defineComponentFixture({ render: ctx => renderHeader(ctx, true, true) }),

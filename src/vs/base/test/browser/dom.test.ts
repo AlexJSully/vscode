@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { $, h, trackAttributes, copyAttributes, disposableWindowInterval, getWindows, getWindowsCount, getWindowId, getWindowById, hasWindow, getWindow, getDocument, isHTMLElement, SafeTriangle, AnimationFrameScheduler, DisposableResizeObserver, getRecentDisposableResizeObserverContextForLoopError, findParentWithClass, hasParentWithClass, ModifierKeyEmitter } from '../../browser/dom.js';
+import { $, h, trackAttributes, copyAttributes, disposableWindowInterval, getWindows, getWindowsCount, getWindowId, getWindowById, hasWindow, getWindow, getDocument, isHTMLElement, SafeTriangle, AnimationFrameScheduler, DisposableResizeObserver, getRecentDisposableResizeObserverContextForLoopError, findParentWithClass, hasParentWithClass, ModifierKeyEmitter, addDisposableListener, DragAndDropObserver, EventType } from '../../browser/dom.js';
 import { asCssValueWithDefault } from '../../../base/browser/cssValue.js';
 import { ensureCodeWindow, isAuxiliaryWindow, mainWindow } from '../../browser/window.js';
 import { DeferredPromise, timeout } from '../../common/async.js';
@@ -750,6 +750,29 @@ suite('dom', () => {
 			}
 
 			assert.deepStrictEqual({ received, retained: emitter.keyStatus.event }, { received: ['keydown', 'keyup'], retained: undefined });
+		});
+	});
+
+	suite('DragAndDropObserver', () => {
+		test('reset ends the drag that a child stops from dropping on the element, so the next drag that enters and leaves the element leaves it', () => {
+			const child = $('span');
+			const element = $('div', undefined, child);
+			const calls: string[] = [];
+			const observer = new DragAndDropObserver(element, { onDragLeave: () => calls.push('leave'), onDrop: () => calls.push('drop') });
+			const stopDrop = addDisposableListener(child, EventType.DROP, e => e.stopPropagation());
+			try {
+				child.dispatchEvent(new DragEvent(EventType.DRAG_ENTER, { bubbles: true }));
+				child.dispatchEvent(new DragEvent(EventType.DROP, { bubbles: true }));
+				observer.reset();
+
+				child.dispatchEvent(new DragEvent(EventType.DRAG_ENTER, { bubbles: true }));
+				child.dispatchEvent(new DragEvent(EventType.DRAG_LEAVE, { bubbles: true }));
+			} finally {
+				stopDrop.dispose();
+				observer.dispose();
+			}
+
+			assert.deepStrictEqual(calls, ['leave']);
 		});
 	});
 

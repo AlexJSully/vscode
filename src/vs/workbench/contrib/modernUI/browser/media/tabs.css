@@ -82,11 +82,11 @@
 	padding-left: var(--vscode-spacing-size80) !important;
 }
 
-.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.wrapping .tabs-container > .tab:last-child {
+.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.wrapping .tabs-container > :is(.tab, .tab-stack-header):last-child {
 	margin-right: calc(var(--last-tab-margin-right) + var(--vscode-spacing-size40));
 }
 
-.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.wrapping .tabs-container > .tab {
+.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title > .tabs-and-actions-container.wrapping .tabs-container > :is(.tab, .tab-stack-header) {
 	min-height: calc(var(--editor-group-tab-height) + var(--vscode-spacing-size20) * 2);
 	border-block: var(--vscode-spacing-size20) solid transparent;
 }
@@ -118,9 +118,30 @@
 		inset var(--vscode-strokeThickness) 0 var(--modern-ui-editor-tab-last-pinned-border);
 }
 
+/* A tab stack header can follow the last pinned tab, so it draws the divider in its place. */
+.modern-ui-tabs.monaco-workbench .part.editor .tabs-container > .tab.sticky + .tab-stack-header {
+	box-shadow: inset var(--vscode-strokeThickness) 0 var(--modern-ui-editor-tab-last-pinned-border);
+}
+
 /* Reuses the last-pinned-border color for the horizontal divider between the pinned and normal tab rows. */
 .modern-ui-tabs.monaco-workbench .part.editor .title.two-tab-bars > .tabs-and-actions-container:first-child {
 	box-shadow: inset 0 calc(-1 * var(--vscode-strokeThickness)) var(--modern-ui-editor-tab-last-pinned-border);
+}
+
+/* The tab stack indicator underlines the pill rather than the whole hit target. */
+.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab.tab-stack-member > .tab-stack-indicator {
+	left: var(--vscode-spacing-size20);
+	right: var(--vscode-spacing-size20);
+}
+
+/* The active pill of a tab stack also has an outline in its color, inside the high contrast border */
+.modern-ui-tabs.monaco-workbench:not(.modern-ui-connected-editor-tabs) .part.editor > .content .editor-group-container > .title .tabs-container > .tab.active.tab-stack-member > .tab-fill {
+	outline: var(--vscode-strokeThickness) solid var(--tab-stack-color);
+	outline-offset: calc(-1 * var(--vscode-strokeThickness));
+}
+
+:is(.hc-black, .hc-light).modern-ui-tabs.monaco-workbench:not(.modern-ui-connected-editor-tabs) .part.editor > .content .editor-group-container > .title .tabs-container > .tab.active.tab-stack-member > .tab-fill {
+	outline-offset: calc(-2 * var(--vscode-strokeThickness));
 }
 
 .modern-ui-tabs .part.editor .tabs-container > .tab > .tab-label,
@@ -243,7 +264,7 @@
 	min-height: calc(var(--editor-group-tab-height) + var(--vscode-spacing-size40) * 2);
 }
 
-.modern-ui-tabs.monaco-workbench .part.editor .tabs-and-actions-container:not(.wrapping) .tabs-container > .tab {
+.modern-ui-tabs.monaco-workbench .part.editor .tabs-and-actions-container:not(.wrapping) .tabs-container > :is(.tab, .tab-stack-header) {
 	border-block: var(--vscode-spacing-size40) solid transparent;
 }
 
@@ -272,7 +293,7 @@
 	border-block-width: var(--vscode-spacing-size60) var(--vscode-spacing-size20);
 }
 
-.modern-ui-tabs.monaco-workbench .part.editor .title.two-tab-bars > .tabs-and-actions-container:not(:first-child) .tabs-container > .tab {
+.modern-ui-tabs.monaco-workbench .part.editor .title.two-tab-bars > .tabs-and-actions-container:not(:first-child) .tabs-container > :is(.tab, .tab-stack-header) {
 	border-block-width: var(--vscode-spacing-size20) var(--vscode-spacing-size60);
 }
 
@@ -590,10 +611,10 @@
 .modern-ui-tabs .part.editor .tabs-and-actions-container > .monaco-scrollable-element > .sticky-tabs-background {
 	position: absolute;
 	top: 0;
+	bottom: 0; /* cover the whole tab bar height, as the top gutter pushes each pill below one tab height */
 	left: 0;
 	z-index: 7;
 	width: 0;
-	height: var(--editor-group-tab-height);
 	background-color: var(--vscode-editor-background);
 	pointer-events: none;
 }
@@ -620,11 +641,12 @@
 	pointer-events: none;
 }
 
-.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab.drop-target-left:not(.last-in-row):not(:last-child)::after {
+/* The slot after a drop shows it, so the slot before shows it only at the end of a row or of the tabs */
+.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-left:not(.last-in-row):not(.drop-target-last)::after {
 	display: none;
 }
 
-.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > .tab.drop-target-left:not(.last-in-row) + .tab.drop-target-right::before {
+.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-left:not(.last-in-row) + :is(.tab, .tab-stack-header).drop-target-right::before {
 	left: calc(-1 * var(--vscode-spacing-size20));
 	transform: translateX(-50%);
 }

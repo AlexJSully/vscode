@@ -11,6 +11,7 @@ import * as dom from '../../../../../base/browser/dom.js';
 import { IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IInstantiationService, ServicesAccessor } from '../../../../../platform/instantiation/common/instantiation.js';
 import { IEditorGroupsService, IEditorGroup, GroupsOrder, GroupOrientation } from '../../../../services/editor/common/editorGroupsService.js';
+import { IEditorResolverService } from '../../../../services/editor/common/editorResolverService.js';
 import { IConfigurationService, IConfigurationChangeEvent } from '../../../../../platform/configuration/common/configuration.js';
 import { IKeybindingService } from '../../../../../platform/keybinding/common/keybinding.js';
 import { Verbosity, EditorResourceAccessor, SideBySideEditor, IEditorIdentifier, GroupModelChangeKind, preventEditorClose, EditorCloseMethod } from '../../../../common/editor.js';
@@ -30,8 +31,8 @@ import { DisposableMap, IDisposable, dispose } from '../../../../../base/common/
 import { MenuId, Action2, registerAction2, MenuRegistry } from '../../../../../platform/actions/common/actions.js';
 import { OpenEditorsDirtyEditorContext, OpenEditorsGroupContext, OpenEditorsReadonlyEditorContext, SAVE_ALL_LABEL, SAVE_ALL_COMMAND_ID, NEW_UNTITLED_FILE_COMMAND_ID, OpenEditorsSelectedFileOrUntitledContext } from '../fileConstants.js';
 import { ResourceContextKey, MultipleEditorGroupsContext } from '../../../../common/contextkeys.js';
-import { CodeDataTransfers, containsDragType } from '../../../../../platform/dnd/browser/dnd.js';
-import { ResourcesDropHandler, fillEditorsDragData } from '../../../../browser/dnd.js';
+import { CodeDataTransfers, containsDragType, extractEditorsDropData } from '../../../../../platform/dnd/browser/dnd.js';
+import { ResourcesDropHandler, anchorDropIndex, fillEditorsDragData, findEditorOfDroppedEditor, moveEditorsOfDroppedEditors } from '../../../../browser/dnd.js';
 import { ViewPane } from '../../../../browser/parts/views/viewPane.js';
 import { IViewletViewOptions } from '../../../../browser/parts/views/viewsViewlet.js';
 import { IDragAndDropData, DataTransfers } from '../../../../../base/browser/dnd.js';
@@ -54,6 +55,7 @@ import { extUriIgnorePathCase } from '../../../../../base/common/resources.js';
 import { ILocalizedString } from '../../../../../platform/action/common/action.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { EditorGroupView } from '../../../../browser/parts/editor/editorGroupView.js';
+import { getIndexPastTabStack, isWholeTabStack, moveEditorsOfDroppedEditorsWithTabStacks, removeDroppedEditorsFromTabStacks } from '../../../../browser/parts/editor/editor.js';
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { getDefaultHoverDelegate } from '../../../../../base/browser/ui/hover/hoverDelegateFactory.js';
 import { StandardKeyboardEvent } from '../../../../../base/browser/keyboardEvent.js';
@@ -114,7 +116,8 @@ export class OpenEditorsView extends ViewPane {
 		@IWorkingCopyService private readonly workingCopyService: IWorkingCopyService,
 		@IFilesConfigurationService private readonly filesConfigurationService: IFilesConfigurationService,
 		@IOpenerService openerService: IOpenerService,
-		@IFileService private readonly fileService: IFileService
+		@IFileService private readonly fileService: IFileService,
+		@IEditorResolverService private readonly editorResolverService: IEditorResolverService
 	) {
 		super(options, keybindingService, contextMenuService, configurationService, contextKeyService, viewDescriptorService, instantiationService, openerService, themeService, hoverService);
 
@@ -254,7 +257,7 @@ export class OpenEditorsView extends ViewPane {
 			this.listLabels.clear();
 		}
 
-		this.dnd = new OpenEditorsDragAndDrop(this.sortOrder, this.instantiationService, this.editorGroupService);
+		this.dnd = new OpenEditorsDragAndDrop(this.sortOrder, this.instantiationService, this.editorGroupService, this.editorResolverService);
 
 		this.listLabels = this.instantiationService.createInstance(ResourceLabels, { onDidChangeVisibility: this.onDidChangeBodyVisibility });
 		this.list = this.instantiationService.createInstance(WorkbenchList, 'OpenEditors', container, delegate, [
@@ -788,7 +791,7 @@ class OpenEditorRenderer implements IListRenderer<OpenEditor, IOpenEditorTemplat
 	}
 }
 
-class OpenEditorsDragAndDrop implements IListDragAndDrop<OpenEditor | IEditorGroup> {
+export class OpenEditorsDragAndDrop implements IListDragAndDrop<OpenEditor | IEditorGroup> {
 
 	private _sortOrder: 'editorOrder' | 'alphabetical' | 'fullPath';
 	public set sortOrder(value: 'editorOrder' | 'alphabetical' | 'fullPath') {
@@ -798,7 +801,8 @@ class OpenEditorsDragAndDrop implements IListDragAndDrop<OpenEditor | IEditorGro
 	constructor(
 		sortOrder: 'editorOrder' | 'alphabetical' | 'fullPath',
 		private instantiationService: IInstantiationService,
-		private editorGroupService: IEditorGroupsService
+		private editorGroupService: IEditorGroupsService,
+		private readonly editorResolverService: IEditorResolverService
 	) {
 		this._sortOrder = sortOrder;
 	}
@@ -894,17 +898,51 @@ class OpenEditorsDragAndDrop implements IListDragAndDrop<OpenEditor | IEditorGro
 		}
 
 		if (data instanceof ElementsDragAndDropData) {
+
+			// The entries of a whole tab stack of the group move as one, so the moves below find them in place
+			const editors = data.elements.map(oe => oe.editor);
+			const isSameGroup = data.elements.every(oe => oe.group === group);
+			if (isSameGroup && isWholeTabStack(group, editors)) {
+				targetEditorIndex = moveEditorsOfDroppedEditorsWithTabStacks(group, editors, targetEditorIndex) ?? targetEditorIndex;
+			}
+
+			const tabStack = isSameGroup ? group.getTabStack(editors[0]) : undefined;
+			const tabStackOfEditors = tabStack && editors.every(editor => group.getTabStack(editor)?.id === tabStack.id) ? tabStack.id : undefined;
+			targetEditorIndex = getIndexPastTabStack(group, targetEditorIndex, tabStackOfEditors);
+
 			for (const oe of data.elements) {
-				const sourceEditorIndex = oe.group.getIndexOfEditor(oe.editor);
-				if (oe.group === group && sourceEditorIndex < targetEditorIndex) {
+
+				// An editor that the group has already moves within it, so it does not count before the drop
+				const existingEditorIndex = group.getIndexOfEditor(oe.editor);
+				if (existingEditorIndex >= 0 && existingEditorIndex < targetEditorIndex) {
 					targetEditorIndex--;
 				}
-				oe.group.moveEditor(oe.editor, group, { index: targetEditorIndex, preserveFocus: true });
+				if (oe.group === group && group.tabStacks.length > 0) {
+					group.moveEditorsWithinGroup([oe.editor], targetEditorIndex, tabStackOfEditors ?? null);
+				} else {
+					oe.group.moveEditor(oe.editor, group, { index: targetEditorIndex, preserveFocus: true });
+				}
 				targetEditorIndex++;
 			}
 			this.editorGroupService.activateGroup(group);
 		} else {
-			this.dropHandler.handleDrop(originalEvent, mainWindow, () => group, () => group.focus(), { index: targetEditorIndex });
+
+			// The data of a drop can only be read while its event is handled
+			const droppedEditors = extractEditorsDropData(originalEvent);
+			const getDropIndex = anchorDropIndex(group, targetEditorIndex);
+			this.dropHandler.handleDrop(originalEvent, mainWindow, () => group, () => group.focus(), undefined, () => {
+				const dropIndex = getDropIndex();
+				const editorsOfDroppedEditors = droppedEditors.map(droppedEditor => findEditorOfDroppedEditor(group, droppedEditor, this.editorResolverService));
+				const index = moveEditorsOfDroppedEditorsWithTabStacks(group, editorsOfDroppedEditors, dropIndex);
+				if (index !== undefined) {
+					return { index };
+				}
+
+				const fallbackIndex = moveEditorsOfDroppedEditors(group, droppedEditors, dropIndex, this.editorResolverService);
+				removeDroppedEditorsFromTabStacks(group, editorsOfDroppedEditors);
+
+				return { index: fallbackIndex };
+			});
 		}
 	}
 

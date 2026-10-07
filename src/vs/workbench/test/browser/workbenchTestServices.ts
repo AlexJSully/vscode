@@ -126,7 +126,7 @@ import { TextEditorPaneSelection } from '../../browser/parts/editor/textEditor.j
 import { TextResourceEditor } from '../../browser/parts/editor/textResourceEditor.js';
 import { IPaneCompositePart } from '../../browser/parts/paneCompositePart.js';
 import { EditorExtensions, EditorInputCapabilities, EditorInputWithOptions, EditorPaneSelectionChangeReason, EditorsOrder, EditorExtensions as Extensions, GroupIdentifier, IActiveEditorChangeEvent, IEditorCloseEvent, IEditorFactoryRegistry, IEditorIdentifier, IEditorOpenContext, IEditorPane, IEditorPaneSelection, IEditorPartOptions, IEditorSerializer, IEditorWillMoveEvent, IEditorWillOpenEvent, IFileEditorInput, IMoveResult, IResourceDiffEditorInput, IRevertOptions, ISaveOptions, ITextDiffEditorPane, IToolbarActions, IUntitledTextResourceEditorInput, IUntypedEditorInput, IVisibleEditorPane } from '../../common/editor.js';
-import { IGroupModelChangeEvent } from '../../common/editor/editorGroupModel.js';
+import { IGroupModelChangeEvent, ITabStack, ITabStackRecord, ITabStackUpdate, TabStackId } from '../../common/editor/editorGroupModel.js';
 import { EditorInput } from '../../common/editor/editorInput.js';
 import { SideBySideEditorInput } from '../../common/editor/sideBySideEditorInput.js';
 import { TextResourceEditorInput } from '../../common/editor/textResourceEditorInput.js';
@@ -151,7 +151,7 @@ import { CodeEditorService } from '../../services/editor/browser/codeEditorServi
 import { EditorPaneService } from '../../services/editor/browser/editorPaneService.js';
 import { EditorResolverService } from '../../services/editor/browser/editorResolverService.js';
 import { CustomEditorLabelService, ICustomEditorLabelService } from '../../services/editor/common/customEditorLabelService.js';
-import { EditorGroupLayout, GroupDirection, GroupOrientation, GroupsArrangement, GroupsOrder, IAuxiliaryEditorPart, ICloseAllEditorsOptions, ICloseEditorOptions, ICloseEditorsFilter, IEditorDropTargetDelegate, IEditorGroup, IEditorGroupActivationEvent, IEditorGroupContextKeyProvider, IEditorGroupsContainer, IEditorGroupsService, IEditorPart, IEditorReplacement, IEditorWorkingSet, IEditorWorkingSetOptions, IFindGroupScope, IMergeGroupOptions, IModalEditorPart } from '../../services/editor/common/editorGroupsService.js';
+import { EditorGroupLayout, GroupDirection, GroupOrientation, GroupsArrangement, GroupsOrder, IAuxiliaryEditorPart, ICloseAllEditorsOptions, ICloseEditorOptions, ICloseEditorsFilter, IEditorDropTargetDelegate, IEditorGroup, IEditorGroupActivationEvent, IEditorGroupContextKeyProvider, IEditorGroupsContainer, IEditorGroupsService, IEditorPart, IEditorReplacement, IEditorWorkingSet, IEditorWorkingSetOptions, IFindGroupScope, IMergeGroupOptions, IModalEditorPart, TabStackEditorFocus } from '../../services/editor/common/editorGroupsService.js';
 import { IEditorPaneService } from '../../services/editor/common/editorPaneService.js';
 import { IEditorResolverService } from '../../services/editor/common/editorResolverService.js';
 import { IEditorsChangeEvent, IEditorService, IRevertAllEditorsOptions, ISaveEditorsOptions, ISaveEditorsResult, IVisibleEditorsChangeEvent, PreferredGroup } from '../../services/editor/common/editorService.js';
@@ -1003,7 +1003,7 @@ export class TestEditorGroupView implements IEditorGroupView {
 	moveEditor(_editor: EditorInput, _target: IEditorGroup, _options?: IEditorOptions): boolean { return true; }
 	moveEditors(_editors: EditorInputWithOptions[], _target: IEditorGroup): boolean { return true; }
 	copyEditor(_editor: EditorInput, _target: IEditorGroup, _options?: IEditorOptions): void { }
-	copyEditors(_editors: EditorInputWithOptions[], _target: IEditorGroup): void { }
+	copyEditors(_editors: EditorInputWithOptions[], _target: IEditorGroup): ReadonlyMap<EditorInput, EditorInput> { return new Map(); }
 	async closeEditor(_editor?: EditorInput, options?: ICloseEditorOptions): Promise<boolean> { return true; }
 	async closeEditors(_editors: EditorInput[] | ICloseEditorsFilter, options?: ICloseEditorOptions): Promise<boolean> { return true; }
 	closeAllEditors(options?: ICloseAllEditorsOptions): any { return true; }
@@ -1011,6 +1011,16 @@ export class TestEditorGroupView implements IEditorGroupView {
 	pinEditor(_editor?: EditorInput): void { }
 	stickEditor(editor?: EditorInput | undefined): void { }
 	unstickEditor(editor?: EditorInput | undefined): void { }
+	readonly tabStacks: readonly ITabStack[] = [];
+	getTabStack(_editor: EditorInput): ITabStack | undefined { return undefined; }
+	addEditorsToTabStack(_editors: readonly EditorInput[], _tabStack?: TabStackId): ITabStack | undefined { return undefined; }
+	removeEditorsFromTabStack(_editors: readonly EditorInput[]): void { }
+	updateTabStack(_tabStack: TabStackId, _update: ITabStackUpdate): void { }
+	moveTabStack(_tabStack: TabStackId, _index: number): void { }
+	moveEditorsWithinGroup(_editors: readonly EditorInput[], _index: number, _tabStack?: TabStackId | null): void { }
+	editTabStack(_tabStack: TabStackId, _focus?: TabStackEditorFocus): boolean { return false; }
+	getTabStackRecords(): readonly ITabStackRecord[] { return []; }
+	addTabStacks(_tabStacks: readonly ITabStackRecord[]): void { }
 	lock(locked: boolean): void { }
 	focus(): void { }
 	get scopedContextKeyService(): IContextKeyService { throw new Error('not implemented'); }
@@ -1140,6 +1150,16 @@ export class TestWorkingCopyBackupService extends InMemoryWorkingCopyBackupServi
 
 		return super.resolve(identifier);
 	}
+}
+
+/**
+ * Returns the name and color bubble of a tab stack that the context view
+ * shows, or `undefined` when it shows none.
+ */
+export function getShownTabStackEditor(contextViewService: IContextViewService): HTMLElement | undefined {
+	const contextView = contextViewService.getContextViewElement();
+
+	return contextView.style.display !== 'none' ? contextView.querySelector<HTMLElement>('.tab-stack-editor') ?? undefined : undefined;
 }
 
 export function toUntypedWorkingCopyId(resource: URI): IWorkingCopyIdentifier {
