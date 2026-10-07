@@ -165,6 +165,15 @@ export interface ITabStackRecord {
 	readonly collapsed: boolean;
 }
 
+/**
+ * The order of the editors of a group with their tab stacks, which {@link EditorGroupModel.restoreTabStackSnapshot} restores.
+ */
+export interface ITabStackUndoSnapshot {
+	readonly editors: readonly EditorInput[];
+	readonly tabStackOfEditor: ReadonlyMap<EditorInput, TabStackId>;
+	readonly tabStackStates: ReadonlyMap<TabStackId, { readonly label: string; readonly color: TabStackColor; readonly collapsed: boolean }>;
+}
+
 interface ITabStackState {
 	label: string;
 	color: TabStackColor;
@@ -1936,6 +1945,53 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 			this.assignTabStacksAfterMove(tabStacksBeforeMove, targetTabStack, pinned);
 
 			return { moves, pinned };
+		});
+	}
+
+	/**
+	 * Returns the order of the editors and their tab stacks, to undo a tab stack operation.
+	 */
+	getTabStackSnapshot(): ITabStackUndoSnapshot {
+		return {
+			editors: [...this.editors],
+			tabStackOfEditor: new Map(this.tabStackOfEditor),
+			tabStackStates: new Map([...this.tabStackStates].map(([id, { label, color, collapsed }]) => [id, { label, color, collapsed }]))
+		};
+	}
+
+	/**
+	 * Restores a snapshot while the editors and their tab stacks still equal `expected`, and returns
+	 * `undefined` without changing anything otherwise.
+	 */
+	restoreTabStackSnapshot(snapshot: ITabStackUndoSnapshot, expected: ITabStackUndoSnapshot): ITabStackOperationResult | undefined {
+		const matchesExpected = expected.editors.length === this.editors.length
+			&& expected.editors.every((editor, index) => this.editors[index] === editor)
+			&& expected.tabStackOfEditor.size === this.tabStackOfEditor.size
+			&& [...expected.tabStackOfEditor].every(([editor, tabStack]) => this.tabStackOfEditor.get(editor) === tabStack);
+		if (!this.tabStacksEnabled || !matchesExpected || snapshot.editors.length !== this.editors.length || snapshot.editors.some(editor => !this.editors.includes(editor))) {
+			return undefined;
+		}
+
+		return this.withTabStacksChangeEvent(() => {
+			const moves: ITabStackEditorMove[] = [];
+			snapshot.editors.forEach((editor, index) => this.moveEditorForTabStacks(editor, index, moves));
+
+			this.tabStackOfEditor.clear();
+			this.tabStackStates.clear();
+			for (const [tabStack, state] of snapshot.tabStackStates) {
+				const holdsActiveEditor = !!this.active && snapshot.tabStackOfEditor.get(this.active) === tabStack;
+				this.tabStackStates.set(tabStack, { ...state, collapsed: state.collapsed && !holdsActiveEditor, size: 0 });
+			}
+			for (const [editor, tabStack] of snapshot.tabStackOfEditor) {
+				const state = this.tabStackStates.get(tabStack);
+				if (state) {
+					state.size++;
+					this.tabStackOfEditor.set(editor, tabStack);
+				}
+			}
+			this.markTabStacksChanged();
+
+			return { moves, pinned: [] };
 		});
 	}
 

@@ -2083,8 +2083,8 @@ export class MultiEditorTabsControl extends EditorTabsControl {
 		tabContainer.setAttribute('aria-description', '');
 	}
 
-	editTabStack(tabStackId: TabStackId, focus?: TabStackEditorFocus): boolean {
-		return this.tabStacksControl.editTabStack(tabStackId, focus);
+	editTabStack(tabStackId: TabStackId, focus?: TabStackEditorFocus, cancelCreation?: () => void): boolean {
+		return this.tabStacksControl.editTabStack(tabStackId, focus, cancelCreation);
 	}
 
 	/**

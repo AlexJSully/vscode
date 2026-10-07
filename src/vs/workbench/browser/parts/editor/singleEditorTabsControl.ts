@@ -206,7 +206,7 @@ export class SingleEditorTabsControl extends EditorTabsControl {
 
 	updateTabStacks(): void { }
 
-	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean {
+	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus, cancelCreation?: () => void): boolean {
 		return false;
 	}
 

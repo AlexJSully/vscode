@@ -187,8 +187,8 @@ export class MultiRowEditorControl extends Disposable implements IEditorTabsCont
 		this.unstickyEditorTabsControl.updateTabStacks();
 	}
 
-	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean {
-		return this.stickyEditorTabsControl.editTabStack(tabStack, focus) || this.unstickyEditorTabsControl.editTabStack(tabStack, focus);
+	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus, cancelCreation?: () => void): boolean {
+		return this.stickyEditorTabsControl.editTabStack(tabStack, focus, cancelCreation) || this.unstickyEditorTabsControl.editTabStack(tabStack, focus, cancelCreation);
 	}
 
 	updateEditorLabel(editor: EditorInput): void {

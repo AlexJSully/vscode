@@ -91,7 +91,7 @@ export interface IEditorTabsControl extends IDisposable {
 	setActive(isActive: boolean): void;
 	updateEditorSelections(): void;
 	updateTabStacks(): void;
-	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean;
+	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus, cancelCreation?: () => void): boolean;
 	updateEditorLabel(editor: EditorInput): void;
 	updateEditorCapabilities(editor: EditorInput): void;
 	updateEditorDirty(editor: EditorInput): void;
@@ -718,7 +718,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 
 	abstract updateTabStacks(): void;
 
-	abstract editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean;
+	abstract editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus, cancelCreation?: () => void): boolean;
 
 	abstract updateEditorLabel(editor: EditorInput): void;
 

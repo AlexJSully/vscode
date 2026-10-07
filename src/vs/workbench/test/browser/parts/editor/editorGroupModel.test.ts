@@ -2750,6 +2750,39 @@ suite('EditorGroupModel', () => {
 		return kinds;
 	}
 
+	test('tab stacks: restoring the snapshot from before a new tab stack undoes it, also its moves and the tab stacks it emptied, unless the group changed since', () => {
+		const createAndRestore = (state: string, editors: readonly string[], changeInBetween?: (testGroup: ITabStackTestGroup) => void) => {
+			const testGroup = createTabStackTestGroup(state);
+			const { group, editor } = testGroup;
+			const tabStacksBefore = group.tabStacks.map(({ id, label, color, collapsed }) => ({ id, label, color, collapsed }));
+			const before = group.getTabStackSnapshot();
+			group.addEditorsToTabStack(editors.map(editor));
+			const created = tabStackState(group);
+			const after = group.getTabStackSnapshot();
+			changeInBetween?.(testGroup);
+			const restored = group.restoreTabStackSnapshot(before, after) !== undefined;
+
+			return {
+				created,
+				restored,
+				state: tabStackState(group),
+				sameTabStacks: JSON.stringify(group.tabStacks.map(({ id, label, color, collapsed }) => ({ id, label, color, collapsed }))) === JSON.stringify(tabStacksBefore)
+			};
+		};
+
+		assert.deepStrictEqual({
+			adjacent: createAndRestore('0 1 2 3*', ['1', '2']),
+			apart: createAndRestore('0 1 2*', ['0', '2']),
+			emptiesOtherTabStack: createAndRestore('0a^ 1a^ 2b 3*', ['0', '1']),
+			changedInBetween: createAndRestore('0 1 2 3*', ['1', '2'], ({ group }) => group.openEditor(input('4'), { pinned: true, active: true })),
+		}, {
+			adjacent: { created: '0 1a 2a 3*', restored: true, state: '0 1 2 3*', sameTabStacks: true },
+			apart: { created: '0a 2a* 1', restored: true, state: '0 1 2*', sameTabStacks: true },
+			emptiesOtherTabStack: { created: '0a 1a 2b 3*', restored: true, state: '0a^ 1a^ 2b 3*', sameTabStacks: true },
+			changedInBetween: { created: '0 1a 2a 3*', restored: false, state: '0 1a 2a 3 4*', sameTabStacks: false },
+		});
+	});
+
 	test('tab stacks: adding to a new tab stack gathers the editors after the first one', () => {
 		assert.deepStrictEqual({
 			inPlace: tabStackStateAfter('0 1 2 3*', ({ group, editor }) => group.addEditorsToTabStack([editor('1'), editor('2')])),

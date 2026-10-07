@@ -25,7 +25,10 @@ import { TAB_STACK_COLOR_IDS } from '../../../common/theme.js';
 import { IEditorGroup, TabStackEditorFocus } from '../../../services/editor/common/editorGroupsService.js';
 import { getTabStackColorLabel, inputCustomTabStackColor, TAB_STACK_CUSTOM_COLOR_LABEL } from './tabStackPickers.js';
 
-export type TabStackEditorGroup = Pick<IEditorGroup, 'tabStacks' | 'onDidModelChange' | 'updateTabStack'>;
+/**
+ * The group of the tab stack that the editor edits, and how to undo the creation of a new tab stack.
+ */
+export type TabStackEditorGroup = Pick<IEditorGroup, 'tabStacks' | 'onDidModelChange' | 'updateTabStack'> & { readonly cancelCreation?: () => void };
 
 interface ITabStackColorSwatch {
 	readonly color: TabStackColor;
@@ -41,7 +44,7 @@ export function getTabStackColorCssValue(color: TabStackColor): string {
 
 /**
  * The name and color bubble of a tab stack under its header, like the editor bubble of a tab group in
- * Chromium. Changes apply as they are made.
+ * Chromium. Changes apply as they are made, and Escape cancels a new tab stack or reverts them.
  */
 export class TabStackEditor extends Disposable {
 
@@ -69,6 +72,7 @@ export class TabStackEditor extends Disposable {
 			return;
 		}
 
+		const initial = { label: tabStack.label, color: tabStack.color };
 		const focusToReturn = getActiveElement();
 		let element: HTMLElement | undefined;
 		let input: InputBox | undefined;
@@ -87,8 +91,8 @@ export class TabStackEditor extends Disposable {
 				disposables.add(customColorButton.onDidClick(() => void this.editCustomColor()));
 
 				// The button handles Escape itself, and blurs once it has fired this
-				disposables.add(customColorButton.onDidEscape(() => this.hide()));
-				this.registerListeners(element, () => coalesce([name.inputElement, getCheckedSwatch(), customColorButton.element]), disposables);
+				disposables.add(customColorButton.onDidEscape(() => this.cancel(initial)));
+				this.registerListeners(element, () => coalesce([name.inputElement, getCheckedSwatch(), customColorButton.element]), () => this.cancel(initial), disposables);
 
 				return disposables;
 			},
@@ -124,6 +128,19 @@ export class TabStackEditor extends Disposable {
 		this.hide();
 
 		super.dispose();
+	}
+
+	/**
+	 * Closes the editor and removes a new tab stack, or reverts the name and color of an existing one.
+	 */
+	private cancel(initial: ITabStackUpdate): void {
+		this.hide();
+
+		if (this.group.cancelCreation) {
+			this.group.cancelCreation();
+		} else if (this.findTabStack()) {
+			this.update(initial);
+		}
 	}
 
 	private findTabStack(): ITabStack | undefined {
@@ -210,12 +227,12 @@ export class TabStackEditor extends Disposable {
 	 * Cycles Tab and Shift+Tab through the tab stops of the editor, and keeps a mouse down on its
 	 * background, which takes no focus, from moving focus.
 	 */
-	private registerListeners(element: HTMLElement, getTabStops: () => HTMLElement[], disposables: DisposableStore): void {
+	private registerListeners(element: HTMLElement, getTabStops: () => HTMLElement[], onEscape: () => void, disposables: DisposableStore): void {
 		disposables.add(addDisposableListener(element, EventType.KEY_DOWN, e => {
 			const event = new StandardKeyboardEvent(e);
 			if (event.equals(KeyCode.Escape)) {
 				EventHelper.stop(e, true);
-				this.hide();
+				onEscape();
 			} else if (event.equals(KeyCode.Tab) || event.equals(KeyMod.Shift | KeyCode.Tab)) {
 				EventHelper.stop(e, true);
 				const tabStops = getTabStops();

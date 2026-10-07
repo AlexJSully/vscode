@@ -489,8 +489,9 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 
 	/**
 	 * Opens the name and color bubble under the header of the tab stack, if the tabs show that header.
+	 * Escape on it calls `cancelCreation` for a new tab stack.
 	 */
-	editTabStack(tabStackId: TabStackId, focus?: TabStackEditorFocus): boolean {
+	editTabStack(tabStackId: TabStackId, focus?: TabStackEditorFocus, cancelCreation?: () => void): boolean {
 		const header = this.tabStackHeaders.get(tabStackId);
 		if (!header || !isTabStacksEnabled(this.groupsView.partOptions) || !this.isTabStackHeaderShown(header.element)) {
 			return false;
@@ -502,7 +503,8 @@ export class TabStacksControl extends Disposable implements ITabsDropHandlerTabS
 		const group: TabStackEditorGroup = {
 			get tabStacks() { return groupView.tabStacks; },
 			onDidModelChange: groupView.onDidModelChange,
-			updateTabStack: (tabStack, update) => this.withoutRevealingActiveTab(() => groupView.updateTabStack(tabStack, update))
+			updateTabStack: (tabStack, update) => this.withoutRevealingActiveTab(() => groupView.updateTabStack(tabStack, update)),
+			cancelCreation
 		};
 		header.bubble.value = this.instantiationService.createInstance(TabStackEditor, header.element, group, tabStackId);
 		header.bubble.value.show(focus);

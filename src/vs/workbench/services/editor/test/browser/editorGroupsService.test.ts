@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { workbenchInstantiationService, registerTestEditor, TestFileEditorInput, TestEditorPart, TestServiceAccessor, ITestInstantiationService, workbenchTeardown, createEditorParts, TestEditorParts, registerTestFileEditor } from '../../../../test/browser/workbenchTestServices.js';
+import { workbenchInstantiationService, registerTestEditor, TestFileEditorInput, TestEditorPart, TestServiceAccessor, ITestInstantiationService, workbenchTeardown, createEditorParts, TestEditorParts, registerTestFileEditor, getShownTabStackEditor } from '../../../../test/browser/workbenchTestServices.js';
 import { GroupDirection, GroupsOrder, MergeGroupMode, GroupOrientation, GroupLocation, isEditorGroup, IEditorGroupsService, GroupsArrangement, IEditorGroupContextKeyProvider, GroupActivationReason, IEditorGroupActivationEvent, IEditorGroup } from '../../common/editorGroupsService.js';
 import { CloseDirection, IEditorPartOptions, EditorsOrder, EditorInputCapabilities, GroupModelChangeKind, SideBySideEditor, IEditorFactoryRegistry, EditorExtensions, EditorResourceAccessor } from '../../../../common/editor.js';
 import { URI } from '../../../../../base/common/uri.js';
@@ -26,8 +26,9 @@ import { basename, isEqual } from '../../../../../base/common/resources.js';
 import { CloseAllEditorGroupsAction } from '../../../../browser/parts/editor/editorActions.js';
 import { ActiveEditorGroupHasCollapsedTabStacksContext, ActiveEditorInTabStackContext, EditorGroupHasTabStacksContext } from '../../../../common/contextkeys.js';
 import { mock } from '../../../../../base/test/common/mock.js';
-import { IContextMenuMenuDelegate, IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
+import { IContextMenuMenuDelegate, IContextMenuService, IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IEditorGroupView, moveEditorsByTabWithTabStacks } from '../../../../browser/parts/editor/editor.js';
+import { addEditorsToTabStackAndEditNew } from '../../../../browser/parts/editor/tabStackPickers.js';
 import { mainWindow } from '../../../../../base/browser/window.js';
 import { EventType, getActiveElement, isHTMLElement } from '../../../../../base/browser/dom.js';
 import { Extensions as DragAndDropExtensions, IDragAndDropContributionRegistry, LocalSelectionTransfer } from '../../../../../platform/dnd/browser/dnd.js';
@@ -2647,6 +2648,37 @@ suite('EditorGroupsService', () => {
 			opened: true,
 			openedWithSingleTab: false,
 			openedWithTabsAgain: true
+		});
+	});
+
+	test('tab stacks - Escape on the editor of a new tab stack puts the editors and tab stacks back as they were, and on a later rename only reverts the name', async () => {
+		const instantiationService = createTabStacksInstantiationService();
+		const [part] = await createPart(instantiationService);
+		const partContainer = part.getContainer()!;
+		mainWindow.document.body.appendChild(partContainer);
+		disposables.add(toDisposable(() => partContainer.remove()));
+		const group = part.activeGroup;
+		const shownInput = () => getShownTabStackEditor(instantiationService.get(IContextViewService))?.querySelector('input');
+		const escape = () => shownInput()?.dispatchEvent(new KeyboardEvent(EventType.KEY_DOWN, { keyCode: 27 /* Escape */, bubbles: true, cancelable: true }));
+
+		const [first, second, third] = await openPinnedTestEditors(group, '1', '2', '3', '4');
+		addEditorsToTabStackAndEditNew(group, [first, third]);
+		const created = tabStackState(group);
+		escape();
+		const afterEscape = { state: tabStackState(group), tabBar: tabBar(group) };
+
+		const tabStack = group.addEditorsToTabStack([first, second])!.id;
+		group.updateTabStack(tabStack, { label: 'Auth' });
+		group.editTabStack(tabStack);
+		const input = shownInput()!;
+		input.value = 'Renamed';
+		input.dispatchEvent(new InputEvent('input'));
+		escape();
+
+		assert.deepStrictEqual({ created, afterEscape, afterRename: { state: tabStackState(group), label: group.tabStacks[0].label } }, {
+			created: '1a 3a 2 4*',
+			afterEscape: { state: '1 2 3 4*', tabBar: '1 2 3 4' },
+			afterRename: { state: '1a 2a 3 4*', label: 'Auth' }
 		});
 	});
 

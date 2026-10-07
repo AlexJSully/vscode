@@ -152,8 +152,8 @@ export class EditorTitleControl extends Themable {
 		this.editorTabsControl.updateTabStacks();
 	}
 
-	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean {
-		return this.editorTabsControl.editTabStack(tabStack, focus);
+	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus, cancelCreation?: () => void): boolean {
+		return this.editorTabsControl.editTabStack(tabStack, focus, cancelCreation);
 	}
 
 	updateEditorLabel(editor: EditorInput): void {

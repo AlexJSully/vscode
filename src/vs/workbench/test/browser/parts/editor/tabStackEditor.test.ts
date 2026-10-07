@@ -17,7 +17,7 @@ import { IContextViewService } from '../../../../../platform/contextview/browser
 import { IHoverService } from '../../../../../platform/hover/browser/hover.js';
 import { NullHoverService } from '../../../../../platform/hover/test/browser/nullHoverService.js';
 import { IInputOptions, IQuickInputService } from '../../../../../platform/quickinput/common/quickInput.js';
-import { TabStackEditor } from '../../../../browser/parts/editor/tabStackEditor.js';
+import { TabStackEditor, TabStackEditorGroup } from '../../../../browser/parts/editor/tabStackEditor.js';
 import { EditorsOrder } from '../../../../common/editor.js';
 import { EditorGroupModel, TabStackColor, TabStackId } from '../../../../common/editor/editorGroupModel.js';
 import { TabStackEditorFocus } from '../../../../services/editor/common/editorGroupsService.js';
@@ -56,10 +56,16 @@ suite('TabStackEditor', () => {
 	 * Gathers the first two editors into a tab stack with the name and color,
 	 * and shows its editor under the anchor with `focus` focused.
 	 */
-	function showEditor(label: string, color: TabStackColor, focus?: TabStackEditorFocus): TabStackId {
+	function showEditor(label: string, color: TabStackColor, focus?: TabStackEditorFocus, cancelCreation?: () => void): TabStackId {
 		const tabStack = model.addEditorsToTabStack(model.getEditors(EditorsOrder.SEQUENTIAL).slice(0, 2)).tabStack!.id;
 		model.updateTabStack(tabStack, { label, color });
-		disposables.add(instantiationService.createInstance(TabStackEditor, anchor, model, tabStack)).show(focus);
+		const group: TabStackEditorGroup = {
+			get tabStacks() { return model.tabStacks; },
+			onDidModelChange: model.onDidModelChange,
+			updateTabStack: (id, update) => model.updateTabStack(id, update),
+			cancelCreation
+		};
+		disposables.add(instantiationService.createInstance(TabStackEditor, anchor, group, tabStack)).show(focus);
 
 		return tabStack;
 	}
@@ -177,7 +183,7 @@ suite('TabStackEditor', () => {
 		});
 	});
 
-	test('Escape closes the editor and keeps what it applied, like Chromium does', () => {
+	test('Escape closes the editor and reverts the name and color to what they were when it opened', () => {
 		showEditor('Old', 'blue');
 		type('New');
 		swatches()[3].click();
@@ -186,9 +192,25 @@ suite('TabStackEditor', () => {
 
 		assert.deepStrictEqual({ shown: !!shownEditor(), label: model.tabStacks[0].label, color: model.tabStacks[0].color, focused: focused() }, {
 			shown: false,
-			label: 'New',
-			color: 'red',
+			label: 'Old',
+			color: 'blue',
 			focused: 'before'
+		});
+	});
+
+	test('Escape on the editor of a new tab stack cancels its creation instead of reverting, also from the Custom Color button', () => {
+		let cancelled = 0;
+		showEditor('', 'blue', undefined, () => cancelled++);
+		type('New');
+		keyDown(nameInput(), 27 /* Escape */);
+		const afterName = { cancelled, shown: !!shownEditor(), label: model.tabStacks[0].label };
+
+		showEditor('', 'blue', undefined, () => cancelled++);
+		keyDown(customColorButton(), 27 /* Escape */);
+
+		assert.deepStrictEqual({ afterName, afterCustomColorButton: { cancelled, shown: !!shownEditor() } }, {
+			afterName: { cancelled: 1, shown: false, label: 'New' },
+			afterCustomColorButton: { cancelled: 2, shown: false }
 		});
 	});
 

@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import './media/editorgroupview.css';
-import { EditorGroupModel, IEditorOpenOptions, IGroupModelChangeEvent, ISerializedEditorGroupModel, isGroupEditorCloseEvent, isGroupEditorOpenEvent, isSerializedEditorGroupModel, ITabStack, ITabStackOperationResult, ITabStackRecord, ITabStackUpdate, TabStackId } from '../../../common/editor/editorGroupModel.js';
+import { EditorGroupModel, IEditorOpenOptions, IGroupModelChangeEvent, ISerializedEditorGroupModel, isGroupEditorCloseEvent, isGroupEditorOpenEvent, isSerializedEditorGroupModel, ITabStack, ITabStackOperationResult, ITabStackRecord, ITabStackUndoSnapshot, ITabStackUpdate, TabStackId } from '../../../common/editor/editorGroupModel.js';
 import { GroupIdentifier, CloseDirection, IEditorCloseEvent, IEditorPane, SaveReason, IEditorPartOptionsChangeEvent, EditorsOrder, IVisibleEditorPane, EditorResourceAccessor, EditorInputCapabilities, IUntypedEditorInput, DEFAULT_EDITOR_ASSOCIATION, SideBySideEditor, EditorCloseContext, IEditorWillMoveEvent, IEditorWillOpenEvent, IMatchEditorOptions, GroupModelChangeKind, IActiveEditorChangeEvent, IFindEditorOptions, TEXT_DIFF_EDITOR_ID } from '../../../common/editor.js';
 import { ActiveEditorGroupLockedContext, ActiveEditorDirtyContext, EditorGroupEditorsCountContext, ActiveEditorStickyContext, ActiveEditorPinnedContext, ActiveEditorLastInGroupContext, ActiveEditorFirstInGroupContext, ResourceContextKey, applyAvailableEditorIds, ActiveEditorAvailableEditorIdsContext, ActiveEditorCanSplitInGroupContext, SideBySideEditorActiveContext, TextCompareEditorVisibleContext, TextCompareEditorActiveContext, ActiveEditorContext, ActiveEditorReadonlyContext, ActiveEditorCanRevertContext, ActiveEditorCanToggleReadonlyContext, ActiveCompareEditorCanSwapContext, MultipleEditorsSelectedInGroupContext, TwoEditorsSelectedInGroupContext, SelectedEditorsInGroupFileOrUntitledResourceContextKey, ActiveEditorCannotCloseContext, ActiveEditorInTabStackContext, EditorGroupHasTabStacksContext, ActiveEditorGroupHasCollapsedTabStacksContext } from '../../../common/contextkeys.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
@@ -636,6 +636,9 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 
 	private onDidGroupModelChange(e: IGroupModelChangeEvent): void {
 
+		// Only the editor opened right after creating a tab stack can cancel its creation
+		this.newTabStack = undefined;
+
 		// Re-emit to outside
 		this._onDidModelChange.fire(e);
 
@@ -1205,6 +1208,9 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 
 	private tabStackOperationDepth = 0;
 
+	// The tab stack that adding editors just created, until the group changes again
+	private newTabStack: { readonly id: TabStackId; readonly before: ITabStackUndoSnapshot; readonly after: ITabStackUndoSnapshot } | undefined;
+
 	get tabStacks(): readonly ITabStack[] {
 		return this.model.tabStacks;
 	}
@@ -1214,7 +1220,11 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 	}
 
 	addEditorsToTabStack(editors: readonly EditorInput[], tabStack?: TabStackId): ITabStack | undefined {
-		return this.doTabStackOperation(() => this.model.addEditorsToTabStack(editors, tabStack)).tabStack;
+		const before = this.model.getTabStackSnapshot();
+		const result = this.doTabStackOperation(() => this.model.addEditorsToTabStack(editors, tabStack)).tabStack;
+		this.newTabStack = result && tabStack === undefined ? { id: result.id, before, after: this.model.getTabStackSnapshot() } : undefined;
+
+		return result;
 	}
 
 	removeEditorsFromTabStack(editors: readonly EditorInput[]): void {
@@ -1275,7 +1285,18 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 	}
 
 	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus): boolean {
-		return this.titleControl.editTabStack(tabStack, focus);
+		const newTabStack = this.newTabStack?.id === tabStack ? this.newTabStack : undefined;
+		this.newTabStack = undefined;
+
+		return this.titleControl.editTabStack(tabStack, focus, newTabStack && (() => this.cancelTabStackCreation(newTabStack.id, newTabStack.before, newTabStack.after)));
+	}
+
+	/**
+	 * Puts the editors and tab stacks back as they were before a tab stack was created, or only
+	 * removes that tab stack when the group changed since.
+	 */
+	private cancelTabStackCreation(tabStack: TabStackId, before: ITabStackUndoSnapshot, after: ITabStackUndoSnapshot): void {
+		this.doTabStackOperation(() => this.model.restoreTabStackSnapshot(before, after) ?? this.model.removeEditorsFromTabStack(this.model.tabStacks.find(candidate => candidate.id === tabStack)?.editors ?? []));
 	}
 
 	getTabStackRecords(): readonly ITabStackRecord[] {
