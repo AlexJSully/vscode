@@ -50,7 +50,7 @@ These fix bugs that exist on `main`. Each one is needed by a B PR, so it goes up
 
 | # | PR | Main files | Depends on | Port | Needed by |
 | --- | --- | --- | --- | --- | --- |
-| A3 | With wrapped tabs, closing a tab by middle click keeps the next reveal of the active tab from happening once wrapping is off | `multiEditorTabsControl.ts` (`doLayoutTabs` wrapping branch, one line) | none | independent; needs its own failing test that clicks no tab stack header, and adds the test helper `createNamedEditor` | B4 (test: clicking a header while tabs wrap) |
+| A3 | With wrapped tabs, closing a tab with its close button or a middle click keeps the next reveal of the active tab from happening once wrapping is off | `multiEditorTabsControl.ts` (`doLayoutTabs` wrapping branch, one line) | none | independent; needs its own failing test that clicks no tab stack header, and adds the test helper `createNamedEditor` | B4 (test: clicking a header while tabs wrap) |
 | A5 | A drop of an editor the group already has lands one slot past where the drop shows, in the Open Editors view (FB-15) and the tab bar, for one file or several | `workbench/browser/dnd.ts` (`findEditorOfDroppedEditor`), `contrib/files/browser/views/openEditorsView.ts`, `multiEditorTabsControl.ts` (`onDrop`) | none | independent for the Open Editors view; entangled for the tab bar | B9 and B11 (code and test: an editor can land inside a tab stack and join it; the tab stack drop tables) |
 | A4 | FB-13: after a drop on a tab from outside the tabs, the next drag that crosses the tabs and drops elsewhere leaves its drop marker on the tabs | `base/browser/dom.ts` (`DragAndDropObserver.reset`), `multiEditorTabsControl.ts` (a capture-phase drop listener on the tabs container) | none | independent; adds the test helpers `dispatchDrag`, `tabsChild`, `describeTabsChild`, `classicGroup`, `dragEditors` and `dropFeedback` | B10 (blocks: the stale marker, and the drop space after a tab stack, stay behind) |
 
@@ -60,7 +60,7 @@ A PR keeps its number from the earlier plan, so branches and notes still match. 
 
 Each was driven with real mouse and keyboard input in the installed VS Code 1.141.0, with a fresh profile and no extensions, against a control run. Screenshots are in `repro-1.141/` in the PR materials folder. **Confirm each by hand before its PR.**
 
-- **A3.** Set `"workbench.editor.wrapTabs": true` and open 12 files, so the tabs wrap onto two rows. Click the first tab. Middle-click the third tab to close it. Open the twelfth file with Quick Open (⌘P). Set `"workbench.editor.wrapTabs": false`. **Bug:** the tabs stay scrolled to the start and the active tab is out of view. **Control:** without the middle-click, the active tab scrolls into view.
+- **A3.** Set `"workbench.editor.wrapTabs": true` and open 12 files, so the tabs wrap onto two rows. Click the first tab. Close the third tab with its close button, or by middle-clicking it. Open the twelfth file with Quick Open (⌘P). Set `"workbench.editor.wrapTabs": false`. **Bug:** the tabs stay scrolled to the start and the active tab is out of view. **Control:** without closing the third tab, the active tab scrolls into view. Reproduced by hand with both the close button and a middle click.
 - **A5.** Open file01 to file04, in that order. Drag file01 from the Explorer onto the top half of file03 in Open Editors: the line shows above file03. **Bug:** the order is `file02 file03 file01 file04`, not `file02 file01 file03 file04`. The same drag onto the left half of file03's tab, with the marker between file02 and file03, gives the same wrong order. Dragging file01 and file02 together before file04 gives `file03 file04 file01 file02`.
 - **A4.** Reload the window, since an earlier drop in the session may already have caused the bug. Open file01 to file04. Drag file06 from the Explorer onto the right half of file03's tab and drop it. Drag file07 from the Explorer across file02's tab, then down into the editor, and drop it there. **Bug:** a white drop marker stays on the tab bar between file01 and file02 until the next drag over the tabs. **Control:** without the first drop, nothing is left behind.
 
@@ -218,7 +218,7 @@ Status values: not started, prepared, deferred, in progress, open, changes reque
 
 | # | Branch | Upstream PR | Status | Notes |
 | --- | --- | --- | --- | --- |
-| A3 | `fix-alexjsully-261007-wrap-reveal-block` | | deferred | Needed by B4. Reproduced in 1.141.0. Description and screenshots in `a3-wrap-reveal-block/`; code to port again. |
+| A3 | `fix-alexjsully-261007-wrap-reveal-block` | | deferred | Needed by B4. Reproduced by hand with the close button and a middle click. Description and screenshots in `a3-wrap-reveal-block/`; code to port again. |
 | A5 | `fix-alexjsully-261007-editor-drop-position` | | deferred | Needed by B9. Reproduced in 1.141.0, in Open Editors and the tab bar. Description and screenshots in `a5-open-editors-drop-index/` cover FB-15; add the tab bar, drop the "apart" claims, and port the code again. |
 | A4 | `fix-alexjsully-261007-stale-drop-marker` | | not started | Needed by B10. FB-13 only; reproduced in 1.141.0. FB-14 joins only if reproduced by hand. |
 | B0 | none (a comment) | microsoft/vscode#100335 | not started | Check-in comment, with the video. |
