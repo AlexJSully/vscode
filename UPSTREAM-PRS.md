@@ -2,7 +2,7 @@
 
 This is the plan for sending fork PR [AlexJSully/vscode#1](https://github.com/AlexJSully/vscode/pull/1) to `microsoft/vscode` as narrow pull requests:
 
-- **Track A:** 3 PRs, each fixing one bug on `main` that the Tab Stacks feature needs and that reproduces by hand in VS Code 1.141.0. Each goes before the B PR that needs it.
+- **Track A:** 1 PR, A3, which fixes a bug on `main` that the Tab Stacks feature needs and that reproduces by hand in VS Code 1.141.0. It is open as microsoft/vscode#340548 and goes before B4, which needs it.
 - **Track B:** the Tab Stacks feature as 12 pull requests: three in a row bring up a first tab stack a reviewer can try, then one PR per feature. It starts once the check-in on microsoft/vscode#100335 gets a go-ahead.
 - **Track C:** 3 fixes for bugs on `main` that Tab Stacks does not need. They wait until the bugs matter more. Not yet reproduced by hand.
 - **Track D:** the deferred bugs in `FOLLOW-UP-BUGS.md`. Not yet reproduced by hand.
@@ -44,33 +44,28 @@ This file is fork-only, like `FOLLOW-UP-BUGS.md`. Neither file goes into an upst
 
 ## Track A: bug fixes that Tab Stacks needs
 
-These fix bugs that exist on `main`. Each one is needed by a B PR, so it goes upstream before that PR. The table is in priority order: by the first B PR that needs each fix, with each fix after the fixes it builds on. "Needed" means one of three things, named in the last column: the B PR calls code the fix adds (**code**), a Tab Stacks test fails without it (**test**), or the tracker's blocking review lists it because a Tab Stacks feature breaks without it (**blocks**).
-
-"Entangled" means the fork's fix lives inside Tab Stacks code, so the A PR rebuilds it for `main`. Each entry's port note in `FOLLOW-UP-BUGS.md` says what changes.
+This fixes a bug that exists on `main`. B4 needs it, so it goes upstream before B4. "Needed" means one of three things, named in the last column: the B PR calls code the fix adds (**code**), a Tab Stacks test fails without it (**test**), or the tracker's blocking review lists it because a Tab Stacks feature breaks without it (**blocks**).
 
 | # | PR | Main files | Depends on | Port | Needed by |
 | --- | --- | --- | --- | --- | --- |
-| A3 | With wrapped tabs, closing a tab with its close button or a middle click keeps the next reveal of the active tab from happening once wrapping is off | `multiEditorTabsControl.ts` (`doLayoutTabs` wrapping branch, one line) | none | independent; needs its own failing test that clicks no tab stack header, and adds the test helper `createNamedEditor` | B4 (test: clicking a header while tabs wrap) |
-| A5 | A drop of an editor the group already has lands one slot past where the drop shows, in the Open Editors view (FB-15) and the tab bar, for one file or several | `workbench/browser/dnd.ts` (`findEditorOfDroppedEditor`), `contrib/files/browser/views/openEditorsView.ts`, `multiEditorTabsControl.ts` (`onDrop`) | none | independent for the Open Editors view; entangled for the tab bar | B9 and B11 (code and test: an editor can land inside a tab stack and join it; the tab stack drop tables) |
-| A4 | FB-13: after a drop on a tab from outside the tabs, the next drag that crosses the tabs and drops elsewhere leaves its drop marker on the tabs | `base/browser/dom.ts` (`DragAndDropObserver.reset`), `multiEditorTabsControl.ts` (a capture-phase drop listener on the tabs container) | none | independent; adds the test helpers `dispatchDrag`, `tabsChild`, `describeTabsChild`, `classicGroup`, `dragEditors` and `dropFeedback` | B10 (blocks: the stale marker, and the drop space after a tab stack, stay behind) |
+| A3 | With wrapped tabs, closing a tab with its close button or a middle click keeps the next reveal of the active tab from happening once wrapping is off | `multiEditorTabsControl.ts` (`doLayoutTabs` wrapping branch, one line) | none | independent; its own test closes a tab with a middle click and clicks no tab stack header | B4 (test: clicking a header while tabs wrap) |
 
-A PR keeps its number from the earlier plan, so branches and notes still match. A1, A2 and A7 moved to Track C as C1, C2 and C3. A3 and A5 were prepared and then deferred; their descriptions and screenshots exist, but their scope is now narrower, so trim them, and port the code again.
+A PR keeps its number from the earlier plan, so branches and notes still match. A1, A2 and A7 moved to Track C as C1, C2 and C3, and A4 and A5 were scrapped (see below).
 
 ### Reproduced in VS Code 1.141.0 (2026-10-08)
 
-Each was driven with real mouse and keyboard input in the installed VS Code 1.141.0, with a fresh profile and no extensions, against a control run. Screenshots are in `repro-1.141/` in the PR materials folder. **Confirm each by hand before its PR.**
+Driven with real mouse and keyboard input in the installed VS Code 1.141.0, with a fresh profile and no extensions, against a control run, and then confirmed by hand. Screenshots are in `repro-1.141/` in the PR materials folder.
 
 - **A3.** Set `"workbench.editor.wrapTabs": true` and open 12 files, so the tabs wrap onto two rows. Click the first tab. Close the third tab with its close button, or by middle-clicking it. Open the twelfth file with Quick Open (⌘P). Set `"workbench.editor.wrapTabs": false`. **Bug:** the tabs stay scrolled to the start and the active tab is out of view. **Control:** without closing the third tab, the active tab scrolls into view. Reproduced by hand with both the close button and a middle click.
-- **A5.** Open file01 to file04, in that order. Drag file01 from the Explorer onto the top half of file03 in Open Editors: the line shows above file03. **Bug:** the order is `file02 file03 file01 file04`, not `file02 file01 file03 file04`. The same drag onto the left half of file03's tab, with the marker between file02 and file03, gives the same wrong order. Dragging file01 and file02 together before file04 gives `file03 file04 file01 file02`.
-- **A4.** Reload the window, since an earlier drop in the session may already have caused the bug. Open file01 to file04. Drag file06 from the Explorer onto the right half of file03's tab and drop it. Drag file07 from the Explorer across file02's tab, then down into the editor, and drop it there. **Bug:** a white drop marker stays on the tab bar between file01 and file02 until the next drag over the tabs. **Control:** without the first drop, nothing is left behind.
 
 ### Scrapped or out of Track A after the re-check
 
+- **A4** (FB-13: a drop marker left on the tabs after a drop from outside them) and **A5** (FB-15: a drop of an editor the group already has lands one slot past the marker): could not be reproduced by hand on 2026-10-15, so they left Track A. They are not fixed upstream either: the code they depend on is unchanged on `main` at `811e884bc22`. Tab Stacks still needs both fixes, so they ship inside B PRs: A5 in B9 and B11, A4 in B10 (see their rows). Both fixes also change drops with the setting off, so those PR descriptions say so and why: with tab stacks on, the stale marker leaves the drop space after a tab stack behind, and the extra slot puts an editor inside a tab stack. The prepared A5 description and screenshots in `a5-open-editors-drop-index/` can feed the B11 description.
 - **A10** (editors opened after a Split in Group editor): could not be reproduced by hand. Removed.
 - **FB-12** (Modern UI tabs keep wrapping on one row): the `wrapping` class does stay set, but nothing on screen differs from classic tabs. Not a visible bug on `main`. If a Tab Stacks PR (B7 or B10) shows a visible symptom, it fixes it there with a test of that symptom.
-- **FB-19 and the tab bar version** (files dropped together land apart): do not reproduce. In 1.141.0 the files stay together and both land one slot past, which is A5. "Apart" only shows once one-slot-past is fixed for the first file alone, so A5's fix must keep them together; that's part of its design, not a separate bug.
-- **FB-20** (marker stays over the Add Tab control): by its own entry, it can only show after the FB-14 fix, so it does not exist on `main`.
-- **FB-14** (no marker on the empty tab space in the Agents window): not checked. The Agents window needs a sign-in. It stays out of A4 unless you reproduce it by hand; if you do, it joins A4.
+- **FB-19 and the tab bar version** (files dropped together land apart): do not reproduce. In 1.141.0 the files stay together and both land one slot past, which is A5's bug. "Apart" only shows once one-slot-past is fixed for the first file alone, so A5's fix, now in B11, must keep them together; that's part of its design, not a separate bug.
+- **FB-20** (marker stays over the Add Tab control): by its own entry, it can only show after the FB-14 fix, so it does not exist on `main`. Its fix ships with FB-14's in B10.
+- **FB-14** (no marker on the empty tab space in the Agents window): not checked. The Agents window needs a sign-in. Its fix ships in B10 with A4's; if you reproduce it by hand, it becomes a Track A PR before B10 instead.
 
 ## Track B: the Tab Stacks feature stack
 
@@ -132,9 +127,9 @@ Sizes are lines with tests, estimated from the fork and from the prepared B1 wor
 | B6 | Add to Tab Stack and quick input fallbacks | Add to Tab Stack... with a picker of tab stacks. Rename and Change Color fall back to a quick input where the header is not shown. New `tabStackPickers.ts`, with custom `#rrggbb` colors kept separable in case review asks to drop them. | about 750 | B5 | `TabStackPickers`, `EditorGroupsService` |
 | B7 | Modern UI and Agents window styles | Tab stack CSS for Modern UI connected and pill tabs (`connectedEditorTabs.css`, `contrib/modernUI/browser/media/tabs.css`), including the outline of the active member, wrapped tabs, pinned tabs on a separate row, high contrast, and the Agents window (`sessions/browser/parts/media/editorPart.css`). Their component fixtures. | about 550 | B3 | `ModernUIContribution`, `Sessions - EditorPart`, component fixtures |
 | B8 | Tab stacks persist | Turning the setting off, or showing tabs as single or none (for example in Zen Mode), hides tab stacks instead of removing them, and turning them on rebuilds each from its record. Tab stacks are saved with the group and restored with validation. `replaceEditors` keeps membership, also of hidden tab stacks. `mergeGroup`, moving a group to a new window and closing an auxiliary window keep tab stacks (`editorPart.ts`, the record helpers in `editor.ts`). | about 750 | B2 | `EditorGroupModel`, `EditorGroupsService` |
-| B9 | Drag and drop within a group | New `tabsDropHandler.ts` for Chrome's drop rules within a group: between members joins, the right half of the last tab joins, the next tab leaves. The inside marker in the tab stack color. Dragging a header moves the whole tab stack. `moveEditorsWithinGroup` and `moveTabStack` in the model and the group. | about 1,000 | B3, A5 | `EditorGroupModel`, `EditorGroupsService` drop tables, `MultiEditorTabsControl` |
-| B10 | Drops at the end of a tab stack and from other groups | The drop space after a tab stack that ends the tab bar, where a drop leaves the tab stack. Tabs from another group or window follow the same rules (the `tabStack` open option). | about 650 | B9, A4 | `EditorGroupsService` drop tables, `MultiEditorTabsControl` |
-| B11 | File and Open Editors drops keep tab stacks whole | Files from the Explorer never join a tab stack. Open Editors drags keep a whole tab stack together and never split one (`openEditorsView.ts`, the drop helpers in `editor.ts`, `TabsDropHandler.moveDroppedEditorsOfGroup`). Tab-bar `beforeOpen` anchoring in `workbench/browser/dnd.ts`. | about 800 | B9, A5 | `Files - OpenEditorsView`, `EditorGroupsService` |
+| B9 | Drag and drop within a group | New `tabsDropHandler.ts` for Chrome's drop rules within a group: between members joins, the right half of the last tab joins, the next tab leaves. The inside marker in the tab stack color. Dragging a header moves the whole tab stack. `moveEditorsWithinGroup` and `moveTabStack` in the model and the group. Also carries the tab bar part of A5's fix (see "Scrapped or out of Track A"): `onDrop` lands an editor the group already has at the drop marker, and `findEditorOfDroppedEditor` in `workbench/browser/dnd.ts`, which `tabsDropHandler.ts` calls. | about 1,100 | B3 | `EditorGroupModel`, `EditorGroupsService` drop tables, `MultiEditorTabsControl` |
+| B10 | Drops at the end of a tab stack and from other groups | The drop space after a tab stack that ends the tab bar, where a drop leaves the tab stack. Tabs from another group or window follow the same rules (the `tabStack` open option). Also carries A4's fix (FB-13: `DragAndDropObserver.reset` in `base/browser/dom.ts` and a capture-phase drop listener on the tabs container), with FB-14 and FB-20 for the Agents window. | about 800 | B9 | `EditorGroupsService` drop tables, `MultiEditorTabsControl`, `dom` |
+| B11 | File and Open Editors drops keep tab stacks whole | Files from the Explorer never join a tab stack. Open Editors drags keep a whole tab stack together and never split one (`openEditorsView.ts`, the drop helpers in `editor.ts`, `TabsDropHandler.moveDroppedEditorsOfGroup`). Tab-bar `beforeOpen` anchoring in `workbench/browser/dnd.ts`. Also carries the Open Editors part of A5's fix: FB-15's index lowering, FB-19's `moveEditorsOfDroppedEditors`, and the `beforeOpen` option of `IEditorService.openEditors`. | about 1,250 | B9 | `Files - OpenEditorsView`, `EditorGroupsService`, `EditorService` |
 | B12 | Keyboard moves | Move Editor Left, Right, First and Last follow Chrome when the group has tab stacks: at a stack's edge, the first press joins or leaves without moving; a collapsed stack is hopped over in one press; moves never cross into the pinned tabs (`moveEditorsByTabWithTabStacks` in `editor.ts`). Screen reader announcements of moving into or out of a tab stack. | about 600 | B4, B9 | `EditorGroupModel`, `EditorGroupsService` move table |
 
 ### What the first phase leaves out
@@ -169,7 +164,7 @@ C3 fixes accessibility. Tab Stacks makes its bugs come up more often, since tab 
 
 ## Track D: deferred bugs in FOLLOW-UP-BUGS.md
 
-FB-1 to FB-3, FB-5 to FB-11, FB-17, FB-21, FB-22 and FB-23 were found by reading code or tests, and do not block Tab Stacks. None has been reproduced by hand yet; reproduce each before its PR. Each becomes a standalone PR once fixed, in the order in `FOLLOW-UP-BUGS.md`, except where small fixes of the same scope share one: FB-1, FB-2 and FB-3 (the restored group state and the comment on its `sticky` field), and FB-7 and FB-8 (multi-selection on keyboard moves and on close). FB-17 can join C2 (dragging over the tabs), and FB-22 can join A4 (the drop marker) if it reproduces by hand and is fixed before A4 opens. FB-21 can join C3 (a tab's accessible name). FB-23 waits on microsoft/vscode#339489.
+FB-1 to FB-3, FB-5 to FB-11, FB-17, FB-21, FB-22 and FB-23 were found by reading code or tests, and do not block Tab Stacks. None has been reproduced by hand yet; reproduce each before its PR. Each becomes a standalone PR once fixed, in the order in `FOLLOW-UP-BUGS.md`, except where small fixes of the same scope share one: FB-1, FB-2 and FB-3 (the restored group state and the comment on its `sticky` field), and FB-7 and FB-8 (multi-selection on keyboard moves and on close). FB-17 can join C2 (dragging over the tabs). FB-22 (the drop markers) stays standalone, since A4 was scrapped. FB-21 can join C3 (a tab's accessible name). FB-23 waits on microsoft/vscode#339489.
 
 ## Track E: features left out of scope
 
@@ -218,9 +213,9 @@ Status values: not started, prepared, deferred, in progress, open, changes reque
 
 | # | Branch | Upstream PR | Status | Notes |
 | --- | --- | --- | --- | --- |
-| A3 | `fix-alexjsully-261007-wrap-reveal-block` | | deferred | Needed by B4. Reproduced by hand with the close button and a middle click. Description and screenshots in `a3-wrap-reveal-block/`; code to port again. |
-| A5 | `fix-alexjsully-261007-editor-drop-position` | | deferred | Needed by B9. Reproduced in 1.141.0, in Open Editors and the tab bar. Description and screenshots in `a5-open-editors-drop-index/` cover FB-15; add the tab bar, drop the "apart" claims, and port the code again. |
-| A4 | `fix-alexjsully-261007-stale-drop-marker` | | not started | Needed by B10. FB-13 only; reproduced in 1.141.0. FB-14 joins only if reproduced by hand. |
+| A3 | `fix-alexjsully-261007-wrap-reveal-block` | microsoft/vscode#340548 | open | Needed by B4. Reproduced by hand with the close button and a middle click. Its test covers a middle click. Description and screenshots in `a3-wrap-reveal-block/`. |
+| A5 | none | | scrapped | Not reproduced by hand on 2026-10-15; its fix ships in B9 (tab bar) and B11 (Open Editors). |
+| A4 | none | | scrapped | Not reproduced by hand on 2026-10-15; its fix ships in B10, with FB-14 and FB-20. |
 | B0 | none (a comment) | microsoft/vscode#100335 | not started | Check-in comment, with the video. |
 | B1 | `feature-alexjsully-261006-tab-stack-model` | | in progress | Exists as `alexjsully-261006-tab-stack-model`. Prepared as "B1a" (1,531 lines with tests); recut by moving the collapse model and `updateTabStack` to B4, `FilteredEditorGroupModel.getTabStack` to B3, and the `MainThreadEditorTabs` no-op to B2. |
 | B2 | `feature-alexjsully-261007-tab-stack-api` | | not started | The `MainThreadEditorTabs` no-op comes from the prepared "B1a". |
@@ -230,9 +225,9 @@ Status values: not started, prepared, deferred, in progress, open, changes reque
 | B6 | `feature-alexjsully-261007-tab-stack-pickers` | | not started | |
 | B7 | `feature-alexjsully-261007-modern-ui-styles` | | not started | |
 | B8 | `feature-alexjsully-261007-tab-stack-persistence` | | not started | The model part is prepared as "B1b" in `b1b-hide-and-persist/`. Port `replaceInHiddenTabStacks` from `b1-tab-stack-model/backup-before-split/`. |
-| B9 | `feature-alexjsully-261007-drag-within-group` | | not started | Port `moveEditorsWithinGroup` with its move helper parameters, and `moveTabStack`, from `b1-tab-stack-model/backup-before-split/`. |
-| B10 | `feature-alexjsully-261007-cross-group-drops` | | not started | Also the drop space at the end of a tab stack. |
-| B11 | `feature-alexjsully-261007-file-drops` | | not started | Explorer files and the Open Editors view. |
+| B9 | `feature-alexjsully-261007-drag-within-group` | | not started | Port `moveEditorsWithinGroup` with its move helper parameters, and `moveTabStack`, from `b1-tab-stack-model/backup-before-split/`. Carries the tab bar part of A5. |
+| B10 | `feature-alexjsully-261007-cross-group-drops` | | not started | Also the drop space at the end of a tab stack. Carries A4 (FB-13), FB-14 and FB-20. |
+| B11 | `feature-alexjsully-261007-file-drops` | | not started | Explorer files and the Open Editors view. Carries the Open Editors part of A5 (FB-15, FB-19 and `beforeOpen`); re-measure at the cut, since it lands near 1,250 lines. If it is well over, the `beforeOpen` option of the editor service with its tests is the line where it splits. |
 | B12 | `feature-alexjsully-261007-keyboard-moves` | | not started | |
 | C1 | `fix-alexjsully-261007-pill-sticky-mask` | | deferred | Prepared on `alexjsully-fix-pill-mode-sticky`. |
 | C2 | `fix-alexjsully-261007-drag-vertical-scroll` | | deferred | Prepared on `alexjsully-261006-drag-over-tabs`; `a2.patch` holds the code. Can share a PR with FB-17. |
@@ -241,7 +236,7 @@ Status values: not started, prepared, deferred, in progress, open, changes reque
 | FB-5 | `fix-alexjsully-261007-move-index-range` | | not started | |
 | FB-6 | `fix-alexjsully-261007-transient-event-index` | | not started | |
 | FB-11 | `fix-alexjsully-261007-long-press-menus` | | not started | |
-| FB-22 | `fix-alexjsully-261007-wrapped-drop-markers` | | not started | Can join A4 if fixed before A4 opens. |
+| FB-22 | `fix-alexjsully-261007-wrapped-drop-markers` | | not started | Standalone; A4 was scrapped. |
 | FB-7, FB-8 | `fix-alexjsully-261007-multiselect-state` | | not started | One PR: multi-selection on keyboard moves and on close. |
 | FB-21 | `fix-alexjsully-261007-stale-group-aria` | | not started | Can join C3. |
 | FB-1, FB-2, FB-3 | `fix-alexjsully-261007-restored-group-state` | | not started | One PR: the restored group state and the comment on its `sticky` field. |
