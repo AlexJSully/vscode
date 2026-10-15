@@ -235,7 +235,7 @@ suite('Sessions - EditorPart', () => {
 				withinRow: getLeadingEdge(false),
 			}, {
 				rowStart: { backgroundClip: 'border-box', leftBorder: 'rgba(0, 0, 0, 0)', leftCorner: '0px' },
-				withinRow: { backgroundClip: 'padding-box', leftBorder: 'rgb(68, 85, 102)', leftCorner: '5px' },
+				withinRow: { backgroundClip: 'border-box', leftBorder: 'rgba(0, 0, 0, 0)', leftCorner: '5px' },
 			});
 		} finally {
 			workbench.remove();
@@ -260,12 +260,14 @@ suite('Sessions - EditorPart', () => {
 		const tab = appendElement(tabs, 'tab active tab-stack-member connected-tab-top-row');
 		tab.style.setProperty('--tab-stack-color', 'rgb(1, 2, 3)');
 		const fill = appendElement(tab, 'tab-fill');
+		const edge = appendElement(tab, 'tab-connected-edge');
 
 		try {
 			const style = mainWindow.getComputedStyle(fill);
+			const edgeStyle = mainWindow.getComputedStyle(edge);
 			const frameStyle = mainWindow.getComputedStyle(group, '::after');
 			assert.deepStrictEqual({
-				sides: [style.borderLeftColor, style.borderRightColor],
+				sides: [edgeStyle.borderLeftColor, edgeStyle.borderRightColor],
 				shoulders: [mainWindow.getComputedStyle(fill, '::before').borderBottomColor, mainWindow.getComputedStyle(fill, '::after').borderBottomColor],
 				// No element between them stacks on its own, so the frame draws over the top edge of the tab
 				frame: { top: frameStyle.borderTopColor, aboveTab: Number(frameStyle.zIndex) > Number(style.zIndex) },

@@ -143,7 +143,7 @@ for (const theme of ['DarkHighContrast', 'LightHighContrast']) {
 }
 
 test('clicking a tab stack header expands and collapses its tab stack', async ({ page }) => {
-	await openFixture(page, 'editor/editorTabBar/editorTabBar/ModernUIOn/TabStacksCollapsed/Dark', '.tabs-container > .tab.active');
+	await openFixture(page, 'editor/tabs/TabStacks/Connected/Collapsed/Dark', '.tabs-container > .tab.active');
 	const header = page.locator('.tabs-container > .tab-stack-header', { hasText: 'Auth' });
 	const tabs = page.locator('.tabs-container > .tab');
 
