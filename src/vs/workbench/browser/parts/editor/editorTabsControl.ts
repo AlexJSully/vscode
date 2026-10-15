@@ -163,7 +163,7 @@ export abstract class EditorTabsControl extends Themable implements IEditorTabsC
 		@INotificationService private readonly notificationService: INotificationService,
 		@IQuickInputService protected quickInputService: IQuickInputService,
 		@IThemeService themeService: IThemeService,
-		@IEditorResolverService protected readonly editorResolverService: IEditorResolverService,
+		@IEditorResolverService private readonly editorResolverService: IEditorResolverService,
 		@IHostService protected readonly hostService: IHostService,
 		@IMenuService protected readonly menuService: IMenuService,
 	) {

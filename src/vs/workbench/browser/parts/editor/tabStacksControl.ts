@@ -36,6 +36,9 @@ import { EditorTabStackContextMenuId, IEditorGroupsView, IEditorGroupView, isTab
 import { getTabStackColorCssValue, TabStackEditor, TabStackEditorGroup } from './tabStackEditor.js';
 import { IDraggedTabStack, ITabsDropHandlerTabStacks, TabsDropSlot } from './tabsDropHandler.js';
 
+/**
+ * A rendered tab stack header, with its label and name and color bubble.
+ */
 interface ITabStackHeader extends IDisposable {
 
 	readonly element: HTMLElement;
@@ -47,10 +50,16 @@ interface ITabStackHeader extends IDisposable {
 	readonly bubble: MutableDisposable<TabStackEditor>;
 }
 
+/**
+ * The transfer data of a tab stack dragged by its header.
+ */
 class DraggedTabStackIdentifier implements IDraggedTabStack {
 	constructor(readonly groupId: GroupIdentifier, readonly tabStackId: TabStackId) { }
 }
 
+/**
+ * What the tab stacks control needs from the tabs control that hosts it.
+ */
 interface ITabStacksControlDelegate {
 
 	/**

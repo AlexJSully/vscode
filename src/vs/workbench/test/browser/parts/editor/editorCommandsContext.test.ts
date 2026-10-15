@@ -14,7 +14,7 @@ import { EditorService } from '../../../../services/editor/browser/editorService
 import { IEditorService } from '../../../../services/editor/common/editorService.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { URI } from '../../../../../base/common/uri.js';
-import { resolveCommandsContext, resolveTabStack, resolveTabStackEditors, resolveTabStackGroupedEditors } from '../../../../browser/parts/editor/editorCommandsContext.js';
+import { resolveCommandsContext, resolveTabStack, resolveTabStackEditors } from '../../../../browser/parts/editor/editorCommandsContext.js';
 import { IEditorCommandsContext } from '../../../../common/editor.js';
 import { IListService, WorkbenchListWidget } from '../../../../../platform/list/browser/listService.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
@@ -242,7 +242,7 @@ suite('Resolving Editor Commands Context', () => {
 		await group2.openEditor(input3, { pinned: true });
 
 		const resolve = (...groupedEditors: { group: IEditorGroup; editors: EditorInput[] }[]) => {
-			const resolved = resolveTabStackEditors({ groupedEditors, preserveFocus: false }, editorGroupService);
+			const resolved = resolveTabStackEditors({ groupedEditors, preserveFocus: false });
 
 			return resolved && { group: resolved.group.id, editors: editorNames(resolved.editors) };
 		};
@@ -277,7 +277,7 @@ suite('Resolving Editor Commands Context', () => {
 		await group.setSelection(input4, [input1]);
 
 		const resolve = (...commandArgs: unknown[]) => {
-			const resolved = resolveTabStack(resolveCommandsContext(commandArgs, accessor.editorService, accessor.editorGroupService, testListService), accessor.editorGroupService);
+			const resolved = resolveTabStack(resolveCommandsContext(commandArgs, accessor.editorService, accessor.editorGroupService, testListService));
 
 			return resolved && { tabStack: resolved.tabStack.label, editors: editorNames(resolved.editors) };
 		};
@@ -293,36 +293,6 @@ suite('Resolving Editor Commands Context', () => {
 			selectedTab: { tabStack: 'A', editors: ['1', '2'] },
 			unselectedTab: { tabStack: 'A', editors: ['1', '2'] },
 			tabOutsideOfTabStacks: undefined
-		});
-	});
-
-	test('tab stack resolvers resolve nothing while tab stacks are disabled', async () => {
-		const accessor = await createServices(createTabStacksConfigurationService());
-		const group = accessor.editorGroupService.activeGroup;
-
-		const input1 = input('1');
-		await group.openEditor(input1, { pinned: true });
-		group.addEditorsToTabStack([input1]);
-
-		const resolveAll = () => {
-			const resolvedContext = resolveCommandsContext([], accessor.editorService, accessor.editorGroupService, testListService);
-			const tabStackEditors = resolveTabStackEditors(resolvedContext, accessor.editorGroupService);
-			const tabStack = resolveTabStack(resolvedContext, accessor.editorGroupService);
-
-			return {
-				tabStackEditors: tabStackEditors && editorNames(tabStackEditors.editors),
-				tabStack: tabStack && editorNames(tabStack.editors),
-				groupedEditors: resolveTabStackGroupedEditors(resolvedContext, accessor.editorGroupService).map(({ editors }) => editorNames(editors))
-			};
-		};
-
-		const singleTab = accessor.editorGroupService.getPart(group).enforcePartOptions({ showTabs: 'single' });
-		const whileSingleTab = resolveAll();
-		singleTab.dispose();
-
-		assert.deepStrictEqual({ whileSingleTab, withMultipleTabs: resolveAll() }, {
-			whileSingleTab: { tabStackEditors: undefined, tabStack: undefined, groupedEditors: [] },
-			withMultipleTabs: { tabStackEditors: ['1'], tabStack: ['1'], groupedEditors: [['1']] }
 		});
 	});
 

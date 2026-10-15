@@ -80,12 +80,7 @@
 }
 
 .monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container.scroll {
-	overflow-x: scroll !important; /* only sideways: the inline overflow of the scrollable element keeps y hidden */
-}
-
-/* Empty space after tabs that end with a tab stack, where a drag of tabs drops outside of it */
-.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container.tab-stack-drop-space {
-	padding-inline-end: var(--vscode-spacing-size280);
+	overflow: scroll !important;
 }
 
 /* Add tab control */

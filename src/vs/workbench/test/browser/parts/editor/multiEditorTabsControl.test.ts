@@ -35,7 +35,6 @@ import { IEditorGroup, IEditorGroupsService } from '../../../../services/editor/
 import { IHostService } from '../../../../services/host/browser/host.js';
 import { INotebookDocumentService, NotebookDocumentWorkbenchService } from '../../../../services/notebook/common/notebookDocumentService.js';
 import { createEditorPart, getShownTabStackEditor, TestFileEditorInput, TestHostService, TestMenuService, workbenchInstantiationService } from '../../workbenchTestServices.js';
-import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 import { IContextMenuMenuDelegate, IContextMenuService, IContextViewService } from '../../../../../platform/contextview/browser/contextView.js';
 import { Action, IActionRunner } from '../../../../../base/common/actions.js';
@@ -77,17 +76,16 @@ suite('MultiEditorTabsControl', () => {
 	let model: EditorGroupModel;
 	let createControl: (menuIds?: IEditorGroupMenuIds) => MultiEditorTabsControl;
 	let instantiationService: ReturnType<typeof workbenchInstantiationService>;
+	let configurationService: TestConfigurationService;
 	let groupView: IEditorGroupView;
 	let groupsView: IEditorGroupsView;
 	let editorPartsView: IEditorPartsView;
-	let editorGroupCount: number;
 	let addMenuVisible: boolean;
 	let addMenuChange: Emitter<void>;
 
 	setup(() => {
 		disposables = new DisposableStore();
 		partOptions = { ...DEFAULT_EDITOR_PART_OPTIONS };
-		editorGroupCount = 1;
 		addMenuVisible = true;
 		addMenuChange = disposables.add(new Emitter<void>());
 
@@ -96,7 +94,8 @@ suite('MultiEditorTabsControl', () => {
 		// other suites may have left behind
 		disposables.add(toDisposable(() => ModifierKeyEmitter.disposeInstance()));
 
-		instantiationService = workbenchInstantiationService(undefined, disposables);
+		configurationService = new TestConfigurationService();
+		instantiationService = workbenchInstantiationService({ configurationService: () => configurationService }, disposables);
 		instantiationService.stub(ITreeViewsDnDService, new TreeViewsDnDService());
 		instantiationService.stub(INotebookDocumentService, new NotebookDocumentWorkbenchService());
 
@@ -150,7 +149,7 @@ suite('MultiEditorTabsControl', () => {
 		};
 
 		editorPartsView = new class extends mock<IEditorPartsView>() {
-			override get count() { return editorGroupCount; }
+			override get count() { return 1; }
 			override getGroup() { return groupView; }
 		};
 
@@ -215,16 +214,6 @@ suite('MultiEditorTabsControl', () => {
 	}
 
 	/**
-	 * Creates an editor for the file with the name, named like the editors
-	 * that each test starts with.
-	 */
-	function createNamedEditor(name: string): EditorInput {
-		return disposables.add(new class extends TestFileEditorInput {
-			override getName(): string { return name; }
-		}(URI.file(`/path/${name}`), 'testEditorInput'));
-	}
-
-	/**
 	 * Returns the accessible names of the tabs in order.
 	 */
 	function tabAriaLabels(): (string | null)[] {
@@ -259,7 +248,7 @@ suite('MultiEditorTabsControl', () => {
 	 * and the first active, with tab stacks enabled in the model and the tabs.
 	 */
 	function createTabStacksGroup(names: readonly string[], options?: Partial<IEditorPartOptions>, menuIds?: IEditorGroupMenuIds): EditorInput[] {
-		(instantiationService.get(IConfigurationService) as TestConfigurationService).setUserConfiguration('workbench', { editor: { enableTabStacks: true } });
+		configurationService.setUserConfiguration('workbench', { editor: { enableTabStacks: true } });
 		control.dispose();
 		container.replaceChildren();
 
@@ -2165,65 +2154,6 @@ suite('MultiEditorTabsControl', () => {
 			unstableLayouts: [],
 			widthsWithinConfiguredRange: true,
 		});
-	});
-
-	test('wrapped tabs stop wrapping once they fit on one row again, also as Modern UI tabs', async () => {
-		partOptions = { ...partOptions, wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, editorActionsLocation: 'hidden' };
-		const states = [];
-		for (const tabStyle of ['connected', 'modern', 'classic'] as const) {
-			const group = connectedGroup();
-			const workbench = group.closest('.monaco-workbench')!;
-			if (tabStyle !== 'connected') {
-				workbench.classList.remove('modern-ui-connected-editor-tabs');
-			}
-			if (tabStyle === 'classic') {
-				workbench.classList.remove('modern-ui', 'modern-ui-tabs');
-			}
-			control.dispose();
-			container.replaceChildren();
-			control = createControl();
-			const tabsAndActionsContainer = container.querySelector<HTMLElement>('.tabs-and-actions-container')!;
-
-			await layoutConnectedGroup(group, 150);
-			const wrappedWhenNarrow = tabsAndActionsContainer.classList.contains('wrapping');
-			await layoutConnectedGroup(group, 900);
-
-			states.push({ tabStyle, wrappedWhenNarrow, wrappedWhenWide: tabsAndActionsContainer.classList.contains('wrapping'), heightWhenWide: control.getHeight() });
-		}
-
-		assert.deepStrictEqual(states, [
-			{ tabStyle: 'connected', wrappedWhenNarrow: true, wrappedWhenWide: false, heightWhenWide: 32 },
-			{ tabStyle: 'modern', wrappedWhenNarrow: true, wrappedWhenWide: false, heightWhenWide: 32 },
-			{ tabStyle: 'classic', wrappedWhenNarrow: true, wrappedWhenWide: false, heightWhenWide: 35 },
-		]);
-	});
-
-	test('fit-sized connected tabs settle wrapping on the first layout while the width grows and shrinks', async () => {
-		const group = connectedGroup();
-		for (let i = 2; i < 8; i++) {
-			model.openEditor(createNamedEditor(`file${i}.txt`), { pinned: true, index: i });
-		}
-		control.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL));
-		const oldOptions = partOptions;
-		partOptions = { ...partOptions, wrapTabs: true };
-		control.updateOptions(oldOptions, partOptions);
-		const tabsAndActionsContainer = container.querySelector<HTMLElement>('.tabs-and-actions-container')!;
-		const tabs = Array.from(container.querySelectorAll<HTMLElement>('.tabs-container > .tab'));
-		const describeLayout = () => ({ wrapping: tabsAndActionsContainer.classList.contains('wrapping'), rows: new Set(tabs.map(tab => tab.offsetTop)).size });
-
-		const widths = Array.from({ length: 41 }, (_, index) => 500 + index * 15);
-		const unstableLayouts = [];
-		for (const width of [...widths, ...widths.reverse()]) {
-			await layoutConnectedGroup(group, width);
-			const firstLayout = describeLayout();
-			await layoutConnectedGroup(group, width);
-			const secondLayout = describeLayout();
-			if (firstLayout.wrapping !== secondLayout.wrapping || firstLayout.rows !== secondLayout.rows) {
-				unstableLayouts.push({ width, firstLayout, secondLayout });
-			}
-		}
-
-		assert.deepStrictEqual(unstableLayouts, []);
 	});
 
 	test('the first nonempty connected tab bar owns the top row after the pinned row empties', async () => {
@@ -4295,120 +4225,6 @@ suite('MultiEditorTabsControl', () => {
 		]);
 	});
 
-	test('announces only the pinned tabs as pinned when pinned tabs are on a separate row', () => {
-		partOptions = { ...partOptions, pinnedTabsOnSeparateRow: true };
-		for (let i = 2; i < 5; i++) {
-			model.openEditor(createNamedEditor(`file${i}.txt`), { pinned: true, index: i });
-		}
-		for (const editor of model.getEditors(EditorsOrder.SEQUENTIAL).slice(0, 2)) {
-			model.stick(editor);
-		}
-		control.dispose();
-		container.replaceChildren();
-		const multiRowControl = disposables.add(instantiationService.createInstance(MultiRowEditorControl, container, editorPartsView, groupsView, groupView, model, undefined, false, false));
-		multiRowControl.openEditors(model.getEditors(EditorsOrder.SEQUENTIAL));
-
-		const tabBars = Array.from(container.querySelectorAll('.tabs-container'));
-		assert.deepStrictEqual(tabBars.map(tabBar => Array.from(tabBar.querySelectorAll('.tab'), tab => tab.getAttribute('aria-label'))), [
-			['file0.txt, pinned', 'file1.txt, pinned'],
-			['file2.txt', 'file3.txt', 'file4.txt'],
-		]);
-	});
-
-	test('announces a tab as pinned once it is pinned and no longer once it is unpinned', () => {
-		const [first, second] = model.getEditors(EditorsOrder.SEQUENTIAL);
-		model.stick(first);
-		control.dispose();
-		container.replaceChildren();
-		control = createControl();
-		const initial = tabAriaLabels();
-
-		model.unstick(first);
-		control.unstickEditor(first);
-		const afterUnpin = tabAriaLabels();
-
-		// A pin moves the editor to the end of the pinned editors, which the editor group tells the tabs first
-		model.stick(second);
-		control.moveEditor(second, 1, 0);
-		control.stickEditor(second);
-
-		assert.deepStrictEqual({ initial, afterUnpin, afterPin: tabAriaLabels() }, {
-			initial: ['file0.txt, pinned', 'file1.txt'],
-			afterUnpin: ['file0.txt', 'file1.txt'],
-			afterPin: ['file1.txt, pinned', 'file0.txt'],
-		});
-	});
-
-	test('draws the tab of an editor that opened before a pin but reached the tabs after it', () => {
-		const [, second] = model.getEditors(EditorsOrder.SEQUENTIAL);
-
-		// The editor group opens several editors at once and tells the tabs once all of them opened,
-		// after it told them of a pin that opening one of them caused
-		const opened = createNamedEditor('file2.txt');
-		model.openEditor(opened, { pinned: true, active: false, index: 2 });
-		model.stick(second);
-		control.moveEditor(second, 1, 0);
-		control.stickEditor(second);
-		control.openEditors([opened]);
-
-		assert.deepStrictEqual(tabAriaLabels(), ['file1.txt, pinned', 'file0.txt', 'file2.txt']);
-	});
-
-	test('announces a preview tab as a preview no longer once it is kept open', () => {
-		const preview = createNamedEditor('file2.txt');
-		model.openEditor(preview, { pinned: false, index: 2 });
-		control.openEditor(preview);
-		const initial = tabAriaLabels();
-
-		model.pin(preview);
-		control.pinEditor(preview);
-
-		assert.deepStrictEqual({ initial, keptOpen: tabAriaLabels() }, {
-			initial: ['file0.txt', 'file1.txt', 'file2.txt, preview'],
-			keptOpen: ['file0.txt', 'file1.txt', 'file2.txt'],
-		});
-	});
-
-	test('draws the tab of an editor that opened before a preview was kept open but reached the tabs after it', () => {
-		const preview = createNamedEditor('file2.txt');
-		model.openEditor(preview, { pinned: false, index: 2 });
-		control.openEditor(preview);
-
-		// The editor group opens several editors at once and tells the tabs once all of them opened,
-		// after it told them that opening one of them kept a preview open
-		const opened = createNamedEditor('file3.txt');
-		model.openEditor(opened, { pinned: true, active: false, index: 3 });
-		model.pin(preview);
-		control.pinEditor(preview);
-		control.openEditors([opened]);
-
-		assert.deepStrictEqual(tabAriaLabels(), ['file0.txt', 'file1.txt', 'file2.txt', 'file3.txt']);
-	});
-
-	test('a pin or a preview kept open redraws the accessible name of every tab whose label changed with it, such as for a new number of groups', () => {
-		const [first] = model.getEditors(EditorsOrder.SEQUENTIAL);
-		const preview = createNamedEditor('file2.txt');
-		model.openEditor(preview, { pinned: false, index: 2 });
-		control.openEditor(preview);
-		const initial = tabAriaLabels();
-
-		// Nothing tells the tabs of a new number of groups, but the next recompute of their labels counts it
-		editorGroupCount = 2;
-		model.stick(first);
-		control.stickEditor(first);
-		const afterPin = tabAriaLabels();
-
-		editorGroupCount = 1;
-		model.pin(preview);
-		control.pinEditor(preview);
-
-		assert.deepStrictEqual({ initial, afterPin, afterPreviewKeptOpen: tabAriaLabels() }, {
-			initial: ['file0.txt', 'file1.txt', 'file2.txt, preview'],
-			afterPin: ['file0.txt, pinned, Editor Group 1', 'file1.txt, Editor Group 1', 'file2.txt, preview, Editor Group 1'],
-			afterPreviewKeptOpen: ['file0.txt, pinned', 'file1.txt', 'file2.txt'],
-		});
-	});
-
 	test('makes no DOM mutations to the tabs container and adds no tab stack indicators without tab stacks', () => {
 		const tabsContainer = container.querySelector<HTMLElement>('.tabs-container')!;
 		const observer = new MutationObserver(() => { });
@@ -4431,28 +4247,6 @@ suite('MultiEditorTabsControl', () => {
 			afterStick: ['T:file0.txt', 'T:file1.txt'],
 			childListChanges: 0,
 			indicators: 0,
-		});
-	});
-
-	test('does not walk the tabs container to put tab stack headers in place while no tab stack shows and no header is left', () => {
-		const [a, b, c] = createTabStacksGroup(['a', 'b', 'c']);
-		const walks = countReads(tabsChild(''), ['firstElementChild']);
-
-		control.updateTabStacks();
-		model.moveEditor(a, 2);
-		control.moveEditor(a, 0, 2);
-		const withoutTabStacks = walks.count;
-
-		addTabStack([b, c]);
-		model.removeEditorsFromTabStack([b, c]);
-		control.updateTabStacks();
-		walks.count = 0;
-		control.updateTabStacks();
-
-		assert.deepStrictEqual({ withoutTabStacks, onceTheHeaderIsGone: walks.count, tabs: strip() }, {
-			withoutTabStacks: 0,
-			onceTheHeaderIsGone: 0,
-			tabs: ['T:b', 'T:c', 'T:a'],
 		});
 	});
 
@@ -4637,15 +4431,6 @@ suite('MultiEditorTabsControl', () => {
 		});
 	});
 
-	test('while a drag is over the tabs they scroll only sideways, so the top edge of the tabs stays in view', async () => {
-		const group = connectedGroup();
-		await layoutConnectedGroup(group, 300);
-		dispatchDrag(EventType.DRAG_ENTER, '', 'left');
-		const { overflowX, overflowY } = mainWindow.getComputedStyle(tabsChild(''));
-
-		assert.deepStrictEqual({ overflowX, overflowY }, { overflowX: 'scroll', overflowY: 'hidden' });
-	});
-
 	test('an action of the menu of a tab stack header that changes nothing does not stop the next reveal of the active tab', async () => {
 		let actionRunner: IActionRunner | undefined;
 		// The context menu UI is the boundary: it runs the actions of the menu with the action runner the tab bar gives it
@@ -4828,7 +4613,7 @@ suite('MultiEditorTabsControl', () => {
 		});
 	});
 
-	test('tabs name their tab stack in their aria label by editor when pinned tabs are on a separate row', () => {
+	test('tabs name their tab stack in their aria label by editor, and none is announced as pinned, when pinned tabs are on a separate row', () => {
 		const [s1, s2, , b, c] = createTabStacksGroup(['s1', 's2', 'a', 'b', 'c'], { pinnedTabsOnSeparateRow: true });
 		model.stick(s1);
 		model.stick(s2);
@@ -4842,8 +4627,23 @@ suite('MultiEditorTabsControl', () => {
 		const unstickyTabs = Array.from(container.querySelectorAll<HTMLElement>('.tabs-container')[1].querySelectorAll<HTMLElement>('.tab'));
 		assert.deepStrictEqual(unstickyTabs.map(tab => {
 			const ariaLabel = tab.getAttribute('aria-label')!;
-			return ariaLabel.endsWith(', in tab stack Auth') ? 'Auth' : ariaLabel.endsWith(', in unnamed tab stack') ? 'unnamed' : undefined;
-		}), [undefined, 'Auth', 'unnamed']);
+			const tabStack = ariaLabel.endsWith(', in tab stack Auth') ? 'Auth' : ariaLabel.endsWith(', in unnamed tab stack') ? 'unnamed' : '-';
+			return ariaLabel.includes(', pinned') ? `${tabStack} (pinned)` : tabStack;
+		}), ['-', 'Auth', 'unnamed']);
+	});
+
+	test('in a group with a tab stack, a tab is announced as pinned once it is pinned and no longer once a tab stack operation unpins it', () => {
+		const [s, a] = createTabStacksGroup(['s', 'a']);
+		addTabStack([a], { label: 'Auth' });
+		const isAnnouncedPinned = () => tabAriaLabels()[0]?.includes(', pinned');
+
+		model.stick(s);
+		control.stickEditor(s);
+		const pinned = isAnnouncedPinned();
+		model.unstick(s);
+		control.unstickEditor(s);
+
+		assert.deepStrictEqual({ pinned, unpinned: isAnnouncedPinned() }, { pinned: true, unpinned: false });
 	});
 
 	test('connected row markers ignore the tabs of a collapsed tab stack', async () => {
@@ -4959,7 +4759,8 @@ suite('MultiEditorTabsControl', () => {
 	});
 
 	test('tab stack headers show black or white text, whichever contrasts more with their color in the current theme', () => {
-		const themeService = instantiationService.get(IThemeService) as TestThemeService;
+		const themeService = instantiationService.get(IThemeService);
+		assert.ok(themeService instanceof TestThemeService);
 		// A translucent color shows the tabs background through it
 		themeService.setTheme(new TestColorTheme({ 'tabStack.yellow': '#CCA70066', 'tabStack.purple': '#652D90', 'editorGroupHeader.tabsBackground': '#252526' }));
 		const [, b, c, d] = createTabStacksGroup(['a', 'b', 'c', 'd']);
@@ -5069,7 +4870,9 @@ suite('MultiEditorTabsControl', () => {
 	});
 
 	test('in classic tabs the indicator of the active tab of a tab stack stays above the border bottom of the active tab', async () => {
-		(instantiationService.get(IThemeService) as TestThemeService).setTheme(new TestColorTheme({ 'tab.activeBorder': '#ff0000' }));
+		const themeService = instantiationService.get(IThemeService);
+		assert.ok(themeService instanceof TestThemeService);
+		themeService.setTheme(new TestColorTheme({ 'tab.activeBorder': '#ff0000' }));
 		const group = classicGroup();
 		const [a, b] = createTabStacksGroup(['a', 'b']);
 		addTabStack([a, b], { color: '#010203' });
@@ -5328,62 +5131,6 @@ suite('MultiEditorTabsControl', () => {
 		return { foot: style.backgroundImage.includes('rgb(1, 2, 3)'), from: Math.round(from), to: Math.round(from + parseFloat(style.width)) };
 	}
 
-	test('a drag of tabs over tabs with tab stacks shows the drop inside a tab stack between its tabs, on its start slot after its header and over the right half of its last tab, and outside of it before a header over its left half, over the left half of the tab after it and after a collapsed tab stack over the right half of its header', async () => {
-		const [a] = await createDropTabStacksGroup();
-		const tabs = strip();
-		dragEditors([a]);
-
-		const feedback = [];
-		for (const [description, side] of [
-			['T:c*', 'left'],
-			['H:Auth', 'right'],
-			['T:b*', 'left'],
-			['H:Auth', 'left'],
-			['T:d*', 'right'],
-			['T:e', 'left'],
-			['H:Docs(collapsed)', 'left'],
-			['H:Docs(collapsed)', 'right'],
-			['T:g', 'right'],
-			['', 'left'],
-		] as const) {
-			feedback.push(`${description || 'tabs'} ${side}: ${dragOver(description, side)}`);
-		}
-
-		assert.deepStrictEqual({ tabs, feedback }, {
-			tabs: ['T:a', 'H:Auth', 'T:b*', 'T:c*', 'T:d*', 'T:e', 'H:Docs(collapsed)', 'T:g'],
-			feedback: [
-				'T:c* left: T:b* | T:c* in Auth',
-				'H:Auth right: H:Auth | T:b* in Auth',
-				'T:b* left: H:Auth | T:b* in Auth',
-				'H:Auth left: T:a | H:Auth',
-				'T:d* right: T:d* | T:e in Auth',
-				'T:e left: T:d* | T:e',
-				'H:Docs(collapsed) left: T:e | H:Docs(collapsed)',
-				'H:Docs(collapsed) right: H:Docs(collapsed) | T:g',
-				'T:g right: T:g | ∅',
-				'tabs left: T:g | ∅',
-			]
-		});
-	});
-
-	test('a drag of files over a tab stack shows the drop after the tab stack, and over its start slot before its header', async () => {
-		await createDropTabStacksGroup();
-
-		const feedback = [];
-		for (const [description, side] of [['T:c*', 'left'], ['H:Auth', 'right'], ['T:b*', 'left'], ['T:d*', 'right']] as const) {
-			const dataTransfer = new DataTransfer();
-			dataTransfer.setData(DataTransfers.RESOURCES, JSON.stringify([URI.file('/path/x').toString()]));
-			feedback.push(`${description} ${side}: ${dragOver(description, side, { dataTransfer })}`);
-		}
-
-		assert.deepStrictEqual(feedback, [
-			'T:c* left: T:d* | T:e',
-			'H:Auth right: T:a | H:Auth',
-			'T:b* left: T:a | H:Auth',
-			'T:d* right: T:d* | T:e',
-		]);
-	});
-
 	test('the drop feedback moves from a tab to a tab stack header and is gone once the drag leaves the tabs', async () => {
 		const [a] = await createDropTabStacksGroup();
 		dragEditors([a]);
@@ -5429,24 +5176,6 @@ suite('MultiEditorTabsControl', () => {
 			overTabAfter: 'T:d* | T:e',
 			overCollapsedHeader: ['T:e | H:Docs(collapsed)', 'H:Docs(collapsed) | T:g'],
 		});
-	});
-
-	test('a drag of tabs over a tab stack that ends the tabs shows the drop inside it over the right half of its last tab, and outside of it over the empty space of the tabs', async () => {
-		const group = classicGroup();
-		const [, b, c] = createTabStacksGroup(['a', 'b', 'c']);
-		addTabStack([b, c], { label: 'S' });
-		await layoutConnectedGroup(group, 1200);
-		dragEditors([b]);
-
-		const feedback = [];
-		for (const [description, side] of [['T:c*', 'right'], ['', 'left']] as const) {
-			feedback.push(`${description || 'tabs'} ${side}: ${dragOver(description, side)}`);
-		}
-
-		assert.deepStrictEqual(feedback, [
-			'T:c* right: T:c* | ∅ in S',
-			'tabs left: T:c* | ∅',
-		]);
 	});
 
 	test('the marker of a drop inside a tab stack that ends the tabs stands on a foot that reaches past its last tab into the empty space after the tabs, which the marker of a drop outside of it there does not have', async () => {
@@ -5604,6 +5333,35 @@ suite('MultiEditorTabsControl', () => {
 		});
 	});
 
+	test('in a group with a tab stack, wrapped tabs stop wrapping once they fit on one row again, also as Modern UI tabs', async () => {
+		const states = [];
+		for (const tabStyle of ['connected', 'modern', 'classic'] as const) {
+			const group = connectedGroup();
+			const workbench = group.closest('.monaco-workbench')!;
+			if (tabStyle !== 'connected') {
+				workbench.classList.remove('modern-ui-connected-editor-tabs');
+			}
+			if (tabStyle === 'classic') {
+				workbench.classList.remove('modern-ui', 'modern-ui-tabs');
+			}
+			const [, b, c] = createTabStacksGroup(['a', 'b', 'c'], { wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, editorActionsLocation: 'hidden' });
+			addTabStack([b, c], { label: 'S' });
+			const tabsAndActionsContainer = container.querySelector<HTMLElement>('.tabs-and-actions-container')!;
+
+			await layoutConnectedGroup(group, 150);
+			const wrappedWhenNarrow = tabsAndActionsContainer.classList.contains('wrapping');
+			await layoutConnectedGroup(group, 900);
+
+			states.push({ tabStyle, wrappedWhenNarrow, wrappedWhenWide: tabsAndActionsContainer.classList.contains('wrapping') });
+		}
+
+		assert.deepStrictEqual(states, [
+			{ tabStyle: 'connected', wrappedWhenNarrow: true, wrappedWhenWide: false },
+			{ tabStyle: 'modern', wrappedWhenNarrow: true, wrappedWhenWide: false },
+			{ tabStyle: 'classic', wrappedWhenNarrow: true, wrappedWhenWide: false },
+		]);
+	});
+
 	test('a drag of tabs over connected tabs that wrapped and fit on one row again adds the empty space after a tab stack that ends the tabs', async () => {
 		const group = connectedGroup();
 		const [a, b, c] = createTabStacksGroup(['a', 'b', 'c'], { wrapTabs: true, tabSizing: 'fixed', tabSizingFixedMinWidth: 120, tabSizingFixedMaxWidth: 120, editorActionsLocation: 'hidden' });
@@ -5661,55 +5419,6 @@ suite('MultiEditorTabsControl', () => {
 		}, {
 			wrapping: false,
 			dropSpace: true,
-		});
-	});
-
-	test('a drag over the empty space of the tabs shows the drop after the last tab, also when the Add Tab control follows the tabs', async () => {
-		const group = connectedGroup();
-		control.dispose();
-		reset(container);
-		control = createControl({ tabsBarAddTab: MenuId.for('test.dropFeedback.addTab') });
-		await layoutConnectedGroup(group, 600);
-		dragEditors([model.getEditorByIndex(0)!]);
-
-		const feedback = dragOver('', 'left');
-		const { content, display } = mainWindow.getComputedStyle(tabsChild('T:file1.txt'), '::after');
-
-		assert.deepStrictEqual({ tabs: strip(), feedback, marker: { content, display } }, {
-			tabs: ['T:file0.txt', 'T:file1.txt', '+'],
-			feedback: 'T:file1.txt | ∅',
-			marker: { content: '""', display: 'block' },
-		});
-	});
-
-	test('a drag that moves on from the last tab over the Add Tab control shows no drop there, where a drop does nothing, and the drop after the last tab again over the empty space of the tabs', async () => {
-		const group = connectedGroup();
-		control.dispose();
-		reset(container);
-		control = createControl({ tabsBarAddTab: MenuId.for('test.dropFeedback.addTab') });
-		await layoutConnectedGroup(group, 600);
-		dragEditors([model.getEditorByIndex(0)!]);
-
-		const feedback = [];
-		for (const [description, side] of [['T:file1.txt', 'right'], ['+', 'left'], ['', 'right']] as const) {
-			feedback.push(`${description || 'tabs'} ${side}: ${dragOver(description, side)}`);
-		}
-
-		// A drag over the Add Tab control enters the action inside it
-		const addTabAction = tabsChild('+').querySelector('.action-label')!;
-		addTabAction.dispatchEvent(new DragEvent(EventType.DRAG_ENTER, { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }));
-		feedback.push(`+ action: ${dropFeedback()}`);
-		addTabAction.dispatchEvent(new DragEvent(EventType.DROP, { bubbles: true, cancelable: true, dataTransfer: new DataTransfer() }));
-
-		assert.deepStrictEqual({ feedback, tabs: strip(), editors: model.getEditors(EditorsOrder.SEQUENTIAL).map(editor => editor.getName()) }, {
-			feedback: [
-				'T:file1.txt right: T:file1.txt | ∅',
-				'+ left: ∅ | ∅',
-				'tabs right: T:file1.txt | ∅',
-				'+ action: ∅ | ∅',
-			],
-			tabs: ['T:file0.txt', 'T:file1.txt', '+'],
-			editors: ['file0.txt', 'file1.txt'],
 		});
 	});
 

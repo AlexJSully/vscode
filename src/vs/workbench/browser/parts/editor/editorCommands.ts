@@ -46,8 +46,8 @@ import { IUntitledTextEditorService } from '../../../services/untitled/common/un
 import { IWorkingCopyEditorService } from '../../../services/workingCopy/common/workingCopyEditorService.js';
 import { IWorkingCopyService } from '../../../services/workingCopy/common/workingCopyService.js';
 import { DIFF_FOCUS_OTHER_SIDE, DIFF_FOCUS_PRIMARY_SIDE, DIFF_FOCUS_SECONDARY_SIDE, registerDiffEditorCommands } from './diffEditorCommands.js';
-import { IResolvedEditorCommandsContext, resolveCommandsContext, resolveTabStack, resolveTabStackEditors, resolveTabStackGroupedEditors } from './editorCommandsContext.js';
-import { fillActiveEditorSelection, getMoveTabIndex, getMoveTabsRunIndex, moveEditorsByTabWithTabStacks, prepareMoveCopyEditors, setTabStackCollapsed } from './editor.js';
+import { IResolvedEditorCommandsContext, resolveCommandsContext, resolveTabStack, resolveTabStackEditors } from './editorCommandsContext.js';
+import { fillActiveEditorSelection, moveEditorsByTabWithTabStacks, prepareMoveCopyEditors, setTabStackCollapsed } from './editor.js';
 import { IRange } from '../../../../editor/common/core/range.js';
 import { addEditorsToTabStackAndEditNew, changeTabStackColor, expandTabStack, pickTabStack, renameTabStack } from './tabStackPickers.js';
 
@@ -272,21 +272,36 @@ function registerEditorMoveCopyCommand(): void {
 			editors = [...editors].reverse();
 		}
 
-		// Adjacent editors move as one run so that a selected tab stack stays together
-		const runIndex = editors.length > 1 && group.tabStacks.length > 0 ? getMoveTabsRunIndex(args, group, editors) : undefined;
-		if (runIndex !== undefined) {
-			group.moveEditorsWithinGroup(editors, runIndex);
-
-			return;
-		}
-
 		for (const editor of editors) {
 			moveTab(args, group, editor);
 		}
 	}
 
 	function moveTab(args: SelectedEditorsMoveCopyArguments, group: IEditorGroup, editor: EditorInput): void {
-		group.moveEditor(editor, group, { index: getMoveTabIndex(args, group.getIndexOfEditor(editor), group.count) });
+		let index = group.getIndexOfEditor(editor);
+		switch (args.to) {
+			case 'first':
+				index = 0;
+				break;
+			case 'last':
+				index = group.count - 1;
+				break;
+			case 'left':
+				index = index - (args.value ?? 1);
+				break;
+			case 'right':
+				index = index + (args.value ?? 1);
+				break;
+			case 'center':
+				index = Math.round(group.count / 2) - 1;
+				break;
+			case 'position':
+				index = (args.value ?? 1) - 1;
+				break;
+		}
+
+		index = index < 0 ? 0 : index >= group.count ? group.count - 1 : index;
+		group.moveEditor(editor, group, { index });
 	}
 
 	function moveCopyEditorsToGroup(isMove: boolean, args: SelectedEditorsMoveCopyArguments, sourceGroup: IEditorGroup, editors: EditorInput[], accessor: ServicesAccessor): void {
@@ -1714,7 +1729,7 @@ function registerTabStackCommands(): void {
 			});
 		}
 		run(accessor: ServicesAccessor, ...args: unknown[]): void {
-			const resolved = resolveTabStackEditors(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
+			const resolved = resolveTabStackEditors(resolveContext(accessor, args));
 			if (resolved) {
 				addEditorsToTabStackAndEditNew(resolved.group, resolved.editors);
 			}
@@ -1733,7 +1748,7 @@ function registerTabStackCommands(): void {
 		}
 		async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
 			const quickInputService = accessor.get(IQuickInputService);
-			const resolved = resolveTabStackEditors(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
+			const resolved = resolveTabStackEditors(resolveContext(accessor, args));
 			if (!resolved) {
 				return;
 			}
@@ -1756,7 +1771,7 @@ function registerTabStackCommands(): void {
 			});
 		}
 		run(accessor: ServicesAccessor, ...args: unknown[]): void {
-			for (const { group, editors } of resolveTabStackGroupedEditors(resolveContext(accessor, args), accessor.get(IEditorGroupsService))) {
+			for (const { group, editors } of resolveContext(accessor, args).groupedEditors) {
 				group.removeEditorsFromTabStack(editors);
 			}
 		}
@@ -1774,7 +1789,7 @@ function registerTabStackCommands(): void {
 		}
 		async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
 			const quickInputService = accessor.get(IQuickInputService);
-			const resolved = resolveTabStack(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
+			const resolved = resolveTabStack(resolveContext(accessor, args));
 			if (!resolved) {
 				return;
 			}
@@ -1795,7 +1810,7 @@ function registerTabStackCommands(): void {
 		}
 		async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
 			const quickInputService = accessor.get(IQuickInputService);
-			const resolved = resolveTabStack(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
+			const resolved = resolveTabStack(resolveContext(accessor, args));
 			if (!resolved) {
 				return;
 			}
@@ -1815,7 +1830,7 @@ function registerTabStackCommands(): void {
 			});
 		}
 		run(accessor: ServicesAccessor, ...args: unknown[]): void {
-			const resolved = resolveTabStack(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
+			const resolved = resolveTabStack(resolveContext(accessor, args));
 			if (resolved) {
 				setTabStackCollapsed(resolved.group, resolved.tabStack.id, true, accessor.get(IAccessibilityService));
 			}
@@ -1853,7 +1868,7 @@ function registerTabStackCommands(): void {
 			});
 		}
 		run(accessor: ServicesAccessor, ...args: unknown[]): void {
-			const resolved = resolveTabStack(resolveContext(accessor, args), accessor.get(IEditorGroupsService));
+			const resolved = resolveTabStack(resolveContext(accessor, args));
 			resolved?.group.removeEditorsFromTabStack(resolved.editors);
 		}
 	});
@@ -1870,7 +1885,7 @@ function registerTabStackCommands(): void {
 		}
 		async run(accessor: ServicesAccessor, ...args: unknown[]): Promise<void> {
 			const resolvedContext = resolveContext(accessor, args);
-			const resolved = resolveTabStack(resolvedContext, accessor.get(IEditorGroupsService));
+			const resolved = resolveTabStack(resolvedContext);
 			await resolved?.group.closeEditors(resolved.editors, { preserveFocus: resolvedContext.preserveFocus });
 		}
 	});

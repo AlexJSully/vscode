@@ -3,15 +3,13 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { coalesce, distinct } from '../../../../base/common/arrays.js';
-import { IDraggedResourceEditorInput, LocalSelectionTransfer } from '../../../../platform/dnd/browser/dnd.js';
+import { LocalSelectionTransfer } from '../../../../platform/dnd/browser/dnd.js';
 import { GroupIdentifier } from '../../../common/editor.js';
 import { IReadonlyEditorGroupModel, ITabStack, TabStackId } from '../../../common/editor/editorGroupModel.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { StickyEditorGroupModel, UnstickyEditorGroupModel } from '../../../common/editor/filteredEditorGroupModel.js';
-import { IEditorResolverService } from '../../../services/editor/common/editorResolverService.js';
-import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier, findEditorOfDroppedEditor, moveEditorsOfDroppedEditors } from '../../dnd.js';
-import { anchorIndexAmongOtherEditors, IEditorGroupsView, IEditorGroupView, isTabStacksEnabled, isWholeTabStack, moveEditorsWithinGroupInOrder, opensEditorBetweenEditorsOfDroppedEditors, removeDroppedEditorsFromTabStacks } from './editor.js';
+import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier } from '../../dnd.js';
+import { IEditorGroupsView, IEditorGroupView, isTabStacksEnabled, isWholeTabStack } from './editor.js';
 
 export type TabsDropSlot =
 	| { readonly kind: 'tab'; readonly element: HTMLElement; readonly tabIndex: number }
@@ -62,6 +60,9 @@ export interface ITabsDropTarget extends ITabsDropFeedback {
 	readonly tabStack?: TabStackId | null;
 }
 
+/**
+ * What the drop handler needs from the tabs control it computes drops for.
+ */
 interface ITabsDropHandlerDelegate {
 
 	/**
@@ -75,7 +76,10 @@ interface ITabsDropHandlerDelegate {
 	 */
 	isTabShown(tab: HTMLElement): boolean;
 
-	getLastShownSlot(): HTMLElement | undefined;
+	/**
+	 * Returns the tab or tab stack header that shows a drop on the empty space after the tabs.
+	 */
+	getLastDropSlot(): HTMLElement | undefined;
 }
 
 /**
@@ -122,8 +126,7 @@ export class TabsDropHandler {
 		private readonly groupsView: IEditorGroupsView,
 		private readonly tabsModel: IReadonlyEditorGroupModel,
 		private readonly delegate: ITabsDropHandlerDelegate,
-		private readonly tabStacks: ITabsDropHandlerTabStacks,
-		private readonly editorResolverService: IEditorResolverService
+		private readonly tabStacks: ITabsDropHandlerTabStacks
 	) { }
 
 	acceptsTabStack(groupId: GroupIdentifier): boolean {
@@ -158,7 +161,7 @@ export class TabsDropHandler {
 			return {
 				tabIndex: this.groupTransfer.hasData(DraggedEditorGroupIdentifier.prototype) ? this.groupView.count : this.tabsModel.count,
 				tabStack: drag.kind === 'editors' ? this.getTabStackOfDroppedEditors(drag, this.tabsModel.count, undefined) : undefined,
-				leftElement: this.delegate.getLastShownSlot(),
+				leftElement: this.delegate.getLastDropSlot(),
 				rightElement: undefined
 			};
 		}
@@ -347,49 +350,6 @@ export class TabsDropHandler {
 		this.groupView.moveEditorsWithinGroup(editors, editorIndex - editorsBefore.length, dropTarget.tabStack);
 
 		return true;
-	}
-
-	/**
-	 * Moves the editors that the group has already for dropped editors together in drop order at the
-	 * drop, as a drop of their tabs would. Returns the index to open the dropped editors at.
-	 */
-	moveDroppedEditorsOfGroup(droppedEditors: readonly IDraggedResourceEditorInput[], dropTarget: ITabsDropTarget, editorIndex: number, sticky?: boolean): number {
-		const editorsOfDroppedEditors = droppedEditors.map(droppedEditor => findEditorOfDroppedEditor(this.groupView, droppedEditor, this.editorResolverService));
-		const editors = distinct(coalesce(editorsOfDroppedEditors));
-		if (editors.length === 0) {
-			return editorIndex;
-		}
-
-		const tabStack = this.getTabStackOfDroppedEditorsOfGroup(editors, editorsOfDroppedEditors, dropTarget);
-		const getIndexAmongOtherEditors = anchorIndexAmongOtherEditors(this.groupView, editors, editorIndex);
-
-		if (this.tabsModel instanceof UnstickyEditorGroupModel || this.isUnstickingTabStackDrop(editorIndex)) {
-			for (const editor of editors) {
-				this.groupView.unstickEditor(editor);
-			}
-		}
-
-		const index = getIndexAmongOtherEditors();
-		if (this.canMoveEditorsWithinGroup(editors, index)) {
-			moveEditorsWithinGroupInOrder(this.groupView, editors, index, tabStack);
-
-			return index;
-		}
-
-		const dropIndex = moveEditorsOfDroppedEditors(this.groupView, droppedEditors, editorIndex, this.editorResolverService, sticky);
-		removeDroppedEditorsFromTabStacks(this.groupView, editorsOfDroppedEditors);
-
-		return dropIndex;
-	}
-
-	/**
-	 * Returns the tab stack that the editors of the group for dropped editors belong to afterwards. They
-	 * leave their tab stack unless they are all of its editors and no new editor opens between them.
-	 */
-	private getTabStackOfDroppedEditorsOfGroup(editors: readonly EditorInput[], editorsOfDroppedEditors: readonly (EditorInput | undefined)[], dropTarget: ITabsDropTarget): TabStackId | null | undefined {
-		const tabStack = this.getTabStackOfDroppedEditors({ kind: 'editors', groupId: this.groupView.id, editors }, dropTarget.tabIndex, undefined);
-
-		return tabStack !== null && opensEditorBetweenEditorsOfDroppedEditors(editorsOfDroppedEditors) ? null : tabStack;
 	}
 
 	/**

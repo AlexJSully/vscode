@@ -1069,9 +1069,8 @@ export interface IEditorGroup {
 	unstickEditor(editor?: EditorInput): void;
 
 	/**
-	 * The tab stacks of the group in the order of their first editor, none while tab stacks do not
-	 * apply to the group. A tab stack is a colored, optionally named run of adjacent editors that can
-	 * be collapsed.
+	 * The tab stacks of the group in editor order: colored, optionally named runs of adjacent editors
+	 * that can be collapsed. Empty while tab stacks do not apply to the group.
 	 */
 	readonly tabStacks: readonly ITabStack[];
 
@@ -1099,10 +1098,9 @@ export interface IEditorGroup {
 	updateTabStack(tabStack: TabStackId, update: ITabStackUpdate): void;
 
 	/**
-	 * Moves editors together in their order, the first to `index` among the
-	 * others, pinning those that move. Unless any is or becomes sticky, they
-	 * join `tabStack`, or none for `null`, where tab stacks stay adjacent;
-	 * otherwise, as for `undefined`, where they land decides.
+	 * Moves editors next to each other, the first to `index` among the other editors, and pins them.
+	 * They join `tabStack`, or none for `null`, where that keeps tab stacks adjacent; otherwise where
+	 * they land decides.
 	 */
 	moveEditorsWithinGroup(editors: readonly EditorInput[], index: number, tabStack?: TabStackId | null): void;
 

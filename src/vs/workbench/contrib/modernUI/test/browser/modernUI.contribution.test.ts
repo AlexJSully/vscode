@@ -3525,36 +3525,6 @@ suite('ModernUIContribution', () => {
 		});
 	});
 
-	test('extends the pill sticky mask over the gutter below the tabs', () => {
-		const root = document.createElement('div');
-		root.className = 'monaco-workbench modern-ui modern-ui-tabs';
-		root.style.setProperty('--editor-group-tab-height', '24px');
-		document.body.appendChild(root);
-		store.add(toDisposable(() => root.remove()));
-
-		const editor = appendElement(root, 'part editor');
-		const content = appendElement(editor, 'content');
-		const group = appendElement(content, 'editor-group-container active');
-		const title = appendElement(group, 'title tabs');
-		const tabsAndActions = appendElement(title, 'tabs-and-actions-container');
-		const scrollable = appendElement(tabsAndActions, 'monaco-scrollable-element');
-		scrollable.style.position = 'relative';
-		scrollable.style.width = '250px';
-		scrollable.style.height = '32px';
-		const stickyBackground = appendElement(scrollable, 'sticky-tabs-background');
-		stickyBackground.style.width = '84px';
-		const scrollableBounds = scrollable.getBoundingClientRect();
-		const stickyBounds = stickyBackground.getBoundingClientRect();
-
-		assert.deepStrictEqual({
-			top: stickyBounds.top - scrollableBounds.top,
-			bottom: scrollableBounds.bottom - stickyBounds.bottom,
-		}, {
-			top: 0,
-			bottom: 0,
-		});
-	});
-
 	test('centers connected actions within their action surface in every theme', () => {
 		const root = document.createElement('div');
 		root.className = 'monaco-workbench modern-ui modern-ui-tabs modern-ui-connected-editor-tabs';

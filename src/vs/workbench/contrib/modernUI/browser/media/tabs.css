@@ -756,10 +756,10 @@
 .modern-ui-tabs .part.editor .tabs-and-actions-container > .monaco-scrollable-element > .sticky-tabs-background {
 	position: absolute;
 	top: 0;
-	bottom: 0; /* cover the whole tab bar height, as the top gutter pushes each pill below one tab height */
 	left: 0;
 	z-index: 7;
 	width: 0;
+	height: var(--editor-group-tab-height);
 	background-color: var(--vscode-editor-background);
 	pointer-events: none;
 }
@@ -783,7 +783,7 @@
 }
 
 /* The slot after a drop shows it, so the slot before shows it only at the end of a row or of the tabs */
-.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-left:not(.last-in-row):not(.drop-target-last)::after {
+.modern-ui-tabs.monaco-workbench .part.editor > .content .editor-group-container > .title .tabs-container > :is(.tab, .tab-stack-header).drop-target-left:not(.last-in-row):not(:last-child):not(.drop-target-last)::after {
 	display: none;
 }
 

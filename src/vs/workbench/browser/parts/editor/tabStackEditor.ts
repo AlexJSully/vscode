@@ -30,6 +30,9 @@ import { getTabStackColorLabel, inputCustomTabStackColor, TAB_STACK_CUSTOM_COLOR
  */
 export type TabStackEditorGroup = Pick<IEditorGroup, 'tabStacks' | 'onDidModelChange' | 'updateTabStack'> & { readonly cancelCreation?: () => void };
 
+/**
+ * A color that the editor of a tab stack offers, with its accessible name.
+ */
 interface ITabStackColorSwatch {
 	readonly color: TabStackColor;
 	readonly element: HTMLElement;

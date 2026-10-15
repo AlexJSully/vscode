@@ -481,6 +481,10 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 	}
 
 	openEditor(candidate: EditorInput, options?: IEditorOpenOptions): IEditorOpenResult {
+		if (!this.hasTabStacks) {
+			return this.doOpenEditor(candidate, options); // no tab stack to join or leave
+		}
+
 		return this.withTabStacksChangeEvent(() => this.doOpenEditor(candidate, options));
 	}
 
@@ -556,7 +560,7 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 			// Insert into our list of editors if pinned or we have no preview editor
 			let tabStack: TabStackId | undefined;
 			if (makePinned || !this.preview) {
-				if (!makeSticky) {
+				if (!makeSticky && this.hasTabStacks) {
 					({ index: targetIndex, tabStack } = this.computeTabStackInsertion(this.editors, targetIndex, options));
 				}
 
@@ -578,7 +582,7 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 						targetIndex--; // accommodate for the fact that the preview editor closes
 					}
 
-					if (!makeSticky) {
+					if (!makeSticky && this.hasTabStacks) {
 						const preview = this.preview;
 						({ index: targetIndex, tabStack } = this.computeTabStackInsertion(this.editors.filter(editor => editor !== preview), targetIndex, options));
 					}
@@ -721,6 +725,10 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 	}
 
 	closeEditor(candidate: EditorInput, context = EditorCloseContext.UNKNOWN, openNext = true): IEditorCloseResult | undefined {
+		if (!this.hasTabStacks) {
+			return this.doCloseEditorAndFireEvent(candidate, context, openNext); // no tab stack to leave
+		}
+
 		return this.withTabStacksChangeEvent(() => this.doCloseEditorAndFireEvent(candidate, context, openNext));
 	}
 
@@ -810,6 +818,10 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 	}
 
 	moveEditor(candidate: EditorInput, toIndex: number): EditorInput | undefined {
+		if (!this.hasTabStacks) {
+			return this.doMoveEditorAndAssignTabStack(candidate, toIndex); // no tab stack to join or leave
+		}
+
 		return this.withTabStacksChangeEvent(() => this.doMoveEditorAndAssignTabStack(candidate, toIndex));
 	}
 
@@ -828,6 +840,12 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 		}
 
 		const editor = this.editors[index];
+		if (!this.hasTabStacks) {
+			this.doMoveEditor(editor, index, toIndex);
+
+			return editor;
+		}
+
 		const tabStacksBeforeMove = new Map([[editor, this.tabStackOfEditor.get(editor)]]);
 
 		this.doMoveEditor(editor, index, toIndex);
@@ -1117,7 +1135,11 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 
 		const [editor, editorIndex] = res;
 
-		this.withTabStacksChangeEvent(() => this.doStick(editor, editorIndex));
+		if (this.hasTabStacks) {
+			this.withTabStacksChangeEvent(() => this.doStick(editor, editorIndex));
+		} else {
+			this.doStick(editor, editorIndex);
+		}
 
 		return editor;
 	}
@@ -1596,6 +1618,14 @@ export class EditorGroupModel extends Disposable implements IEditorGroupModel {
 	}
 
 	//#region Tab Stacks
+
+	/**
+	 * Whether the group has a tab stack, without which opening, closing, moving and sticking
+	 * editors skip the tab stack rules.
+	 */
+	private get hasTabStacks(): boolean {
+		return this.tabStackStates.size > 0;
+	}
 
 	/**
 	 * The tab stacks of the group in the order of their first editor, none while

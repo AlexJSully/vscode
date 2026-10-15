@@ -1528,7 +1528,7 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 
 		// Open the other ones inactive, keeping those that already follow the first one in place
 		const inactiveEditors = editorsToOpen.slice(1);
-		const indexAfterFirstEditor = this.model.indexOf(firstEditor.editor, undefined, openEditorsOptions) + 1;
+		const indexAfterFirstEditor = this.getIndexOfEditor(firstEditor.editor) + 1;
 		let inPlaceCount = 0;
 		while (inPlaceCount < inactiveEditors.length && this.model.indexOf(inactiveEditors[inPlaceCount].editor, undefined, openEditorsOptions) === indexAfterFirstEditor + inPlaceCount) {
 			inPlaceCount++;
