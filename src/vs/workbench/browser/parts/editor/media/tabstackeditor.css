@@ -1,0 +1,59 @@
+/*---------------------------------------------------------------------------------------------
+ *  Copyright (c) Microsoft Corporation. All rights reserved.
+ *  Licensed under the MIT License. See License.txt in the project root for license information.
+ *--------------------------------------------------------------------------------------------*/
+
+/* A floating surface like the quick input, rounded at the outer tier */
+.monaco-workbench .tab-stack-editor {
+	display: flex;
+	flex-direction: column;
+	gap: var(--vscode-spacing-size120);
+	box-sizing: border-box;
+	padding: var(--vscode-spacing-size120);
+	border: var(--vscode-strokeThickness) solid var(--vscode-widget-border);
+	border-radius: var(--vscode-cornerRadius-large);
+	background-color: var(--vscode-quickInput-background);
+	color: var(--vscode-quickInput-foreground);
+	box-shadow: var(--vscode-shadow-lg);
+}
+
+.monaco-workbench .tab-stack-editor > .tab-stack-editor-colors {
+	display: flex;
+	gap: var(--vscode-spacing-size120);
+	padding: var(--vscode-spacing-size40);
+}
+
+.monaco-workbench .tab-stack-editor > .tab-stack-editor-colors > .tab-stack-editor-color {
+	flex: 0 0 auto;
+	width: var(--vscode-spacing-size160);
+	height: var(--vscode-spacing-size160);
+	padding: 0;
+	border: none;
+	border-radius: var(--vscode-cornerRadius-circle);
+	background-color: var(--tab-stack-color);
+	cursor: pointer;
+}
+
+/* The checked color is ringed in its own color, apart from the swatch by the background */
+.monaco-workbench .tab-stack-editor > .tab-stack-editor-colors > .tab-stack-editor-color.checked {
+	box-shadow: 0 0 0 var(--vscode-spacing-size20) var(--vscode-quickInput-background), 0 0 0 var(--vscode-spacing-size40) var(--tab-stack-color);
+}
+
+.monaco-workbench .tab-stack-editor > .tab-stack-editor-colors > .tab-stack-editor-color:focus {
+	outline: none;
+}
+
+.monaco-workbench .tab-stack-editor > .tab-stack-editor-colors > .tab-stack-editor-color:focus-visible {
+	outline: var(--vscode-strokeThickness) solid var(--vscode-focusBorder);
+	outline-offset: var(--vscode-spacing-size60);
+}
+
+/* Keeps a swatch of any color, custom ones included, visible against a high contrast background */
+.monaco-workbench:is(.hc-black, .hc-light) .tab-stack-editor > .tab-stack-editor-colors > .tab-stack-editor-color {
+	border: var(--vscode-strokeThickness) solid var(--vscode-contrastBorder);
+}
+
+/* In high contrast the ring of the checked color is the active contrast border, which stays visible whatever the color */
+.monaco-workbench:is(.hc-black, .hc-light) .tab-stack-editor > .tab-stack-editor-colors > .tab-stack-editor-color.checked {
+	box-shadow: 0 0 0 var(--vscode-spacing-size20) var(--vscode-quickInput-background), 0 0 0 var(--vscode-spacing-size40) var(--vscode-contrastActiveBorder);
+}

@@ -4,8 +4,9 @@
  *--------------------------------------------------------------------------------------------*/
 
 import assert from 'assert';
-import { EditorGroupModel, IGroupEditorChangeEvent, IGroupEditorCloseEvent, IGroupEditorMoveEvent, IGroupEditorOpenEvent, ISerializedEditorGroupModel, isGroupEditorChangeEvent, isGroupEditorCloseEvent, isGroupEditorMoveEvent, isGroupEditorOpenEvent } from '../../../../common/editor/editorGroupModel.js';
-import { EditorExtensions, IEditorFactoryRegistry, IFileEditorInput, IEditorSerializer, CloseDirection, EditorsOrder, IResourceDiffEditorInput, IResourceSideBySideEditorInput, SideBySideEditor, EditorCloseContext, GroupModelChangeKind } from '../../../../common/editor.js';
+import { EditorGroupModel, IGroupEditorChangeEvent, IGroupEditorCloseEvent, IGroupEditorMoveEvent, IGroupEditorOpenEvent, ISerializedEditorGroupModel, ISerializedEditorInput, isGroupEditorChangeEvent, isGroupEditorCloseEvent, isGroupEditorMoveEvent, isGroupEditorOpenEvent } from '../../../../common/editor/editorGroupModel.js';
+import { IAddEditorsToTabStackResult, ITabStackOperationResult, ITabStackRecord, TabStackId } from '../../../../common/editor/editorGroupTabStacks.js';
+import { EditorExtensions, IEditorFactoryRegistry, IFileEditorInput, IEditorSerializer, CloseDirection, EditorsOrder, IResourceDiffEditorInput, IResourceSideBySideEditorInput, SideBySideEditor, EditorCloseContext, GroupModelChangeKind, IEditorPartOptions } from '../../../../common/editor.js';
 import { URI } from '../../../../../base/common/uri.js';
 import { TestLifecycleService, workbenchInstantiationService } from '../../workbenchTestServices.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
@@ -35,7 +36,7 @@ suite('EditorGroupModel', () => {
 		testInstService = undefined;
 	});
 
-	function inst(): IInstantiationService {
+	function inst(editorConfiguration?: Partial<IEditorPartOptions>): IInstantiationService {
 		if (!testInstService) {
 			testInstService = new TestInstantiationService();
 		}
@@ -46,14 +47,14 @@ suite('EditorGroupModel', () => {
 		inst.stub(ITelemetryService, NullTelemetryService);
 
 		const config = new TestConfigurationService();
-		config.setUserConfiguration('workbench', { editor: { openPositioning: 'right', focusRecentEditorAfterClose: true } });
+		config.setUserConfiguration('workbench', { editor: { openPositioning: 'right', focusRecentEditorAfterClose: true, ...editorConfiguration } });
 		inst.stub(IConfigurationService, config);
 
 		return inst;
 	}
 
-	function createEditorGroupModel(serialized?: ISerializedEditorGroupModel): EditorGroupModel {
-		const group = disposables.add(inst().createInstance(EditorGroupModel, serialized));
+	function createEditorGroupModel(serialized?: ISerializedEditorGroupModel, editorConfiguration?: Partial<IEditorPartOptions>): EditorGroupModel {
+		const group = disposables.add(inst(editorConfiguration).createInstance(EditorGroupModel, serialized));
 
 		disposables.add(toDisposable(() => {
 			for (const editor of group.getEditors(EditorsOrder.MOST_RECENTLY_ACTIVE)) {
@@ -111,6 +112,7 @@ suite('EditorGroupModel', () => {
 		transient: IGroupEditorChangeEvent[];
 		moved: IGroupEditorMoveEvent[];
 		disposed: IGroupEditorChangeEvent[];
+		tabStacks: number[];
 	}
 
 	function groupListener(group: EditorGroupModel): GroupEvents {
@@ -128,7 +130,8 @@ suite('EditorGroupModel', () => {
 			unsticky: [],
 			transient: [],
 			moved: [],
-			disposed: []
+			disposed: [],
+			tabStacks: []
 		};
 
 		disposables.add(group.onDidModelChange(e => {
@@ -143,6 +146,9 @@ suite('EditorGroupModel', () => {
 				return;
 			} else if (e.kind === GroupModelChangeKind.GROUP_LABEL) {
 				groupEvents.label.push(group.id);
+				return;
+			} else if (e.kind === GroupModelChangeKind.TAB_STACKS) {
+				groupEvents.tabStacks.push(group.id);
 				return;
 			}
 			if (!e.editor) {
@@ -2602,6 +2608,969 @@ suite('EditorGroupModel', () => {
 		assert.strictEqual(group.isTransient(input2), false);
 		assert.strictEqual(events.transient[2].editor, input2);
 	});
+
+	//#region Tab Stacks
+
+	interface ITabStackTestGroup {
+		readonly group: EditorGroupModel;
+		readonly editor: (id: string) => EditorInput;
+		readonly tabStack: (letter: string) => TabStackId;
+	}
+
+	function createTabStackEditorGroupModel(serialized?: ISerializedEditorGroupModel, editorConfiguration?: Partial<IEditorPartOptions>, tabStacksEnabled = true): EditorGroupModel {
+		inst().invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
+
+		const group = createEditorGroupModel(serialized, editorConfiguration);
+		group.setTabStacksEnabled(tabStacksEnabled);
+
+		return group;
+	}
+
+	function serializedTestEditor(id: string): ISerializedEditorInput {
+		return { id: 'testEditorInputForGroups', value: JSON.stringify({ id }) };
+	}
+
+	function editorId(editor: EditorInput): string {
+		return editor instanceof TestEditorInput || editor instanceof NonSerializableTestEditorInput ? editor.id : editor.getName();
+	}
+
+	/**
+	 * Returns the editors as tokens of the id, then `s` when sticky, a letter per tab stack, `^` when
+	 * its tab stack is collapsed, `?` when in preview and `*` when active, such as
+	 * `'0s 1a* 2a 3b^ 4?'`. Asserts the tab stack invariants.
+	 */
+	function tabStackState(group: EditorGroupModel): string {
+		const editors = group.getEditors(EditorsOrder.SEQUENTIAL);
+
+		// Check the invariants of each tab stack and give it the next letter
+		const letters = new Map<TabStackId, string>();
+		for (const tabStack of group.tabStacks) {
+			const indices = tabStack.editors.map(editor => editors.indexOf(editor));
+			assert.deepStrictEqual(indices, indices.map((_, i) => indices[0] + i), 'the editors of a tab stack are adjacent');
+			assert.ok(tabStack.editors.every(editor => !group.isSticky(editor) && group.isPinned(editor)), 'sticky and preview editors are never in a tab stack');
+			assert.ok(!tabStack.collapsed || group.activeEditor === null || !tabStack.editors.includes(group.activeEditor), 'a collapsed tab stack never contains the active editor');
+			assert.ok(!tabStack.collapsed || tabStack.editors.every(editor => !group.isSelected(editor)), 'an editor hidden in a collapsed tab stack is never selected');
+
+			letters.set(tabStack.id, String.fromCharCode('a'.charCodeAt(0) + letters.size));
+		}
+
+		// Write one token per editor
+		return editors.map(editor => {
+			const tabStack = group.getTabStack(editor);
+
+			return [
+				editorId(editor),
+				group.isSticky(editor) ? 's' : '',
+				tabStack ? letters.get(tabStack.id) : '',
+				tabStack?.collapsed ? '^' : '',
+				group.isPinned(editor) ? '' : '?',
+				group.isActive(editor) ? '*' : ''
+			].join('');
+		}).join(' ');
+	}
+
+	/**
+	 * Creates a group with tab stacks on, in the state that {@link tabStackState} describes. Tab
+	 * stacks are created in order of appearance, which assigns their colors.
+	 */
+	function createTabStackTestGroup(state: string, editorConfiguration?: Partial<IEditorPartOptions>): ITabStackTestGroup {
+		const group = createTabStackEditorGroupModel(undefined, editorConfiguration);
+
+		// Open the editors in order, sticking them and noting their tab stacks as the tokens say
+		const editors = new Map<string, EditorInput>();
+		const editorsOfTabStack = new Map<string, EditorInput[]>();
+		const collapsedTabStacks = new Set<string>();
+		let activeEditor: EditorInput | undefined;
+
+		const tokens = state.split(' ');
+		for (let index = 0; index < tokens.length; index++) {
+			const token = /^(?<id>\d+)(?<sticky>s?)(?<tabStack>[a-r]?)(?<collapsed>\^?)(?<preview>\??)(?<active>\*?)$/.exec(tokens[index])?.groups;
+			assert.ok(token, `invalid token ${tokens[index]}`);
+
+			const editor = input(token.id);
+			editors.set(token.id, editor);
+			group.openEditor(editor, { pinned: !token.preview, active: true, index });
+
+			if (token.sticky) {
+				group.stick(editor);
+			}
+
+			if (token.tabStack) {
+				editorsOfTabStack.set(token.tabStack, [...editorsOfTabStack.get(token.tabStack) ?? [], editor]);
+				if (token.collapsed) {
+					collapsedTabStacks.add(token.tabStack);
+				}
+			}
+
+			if (token.active) {
+				activeEditor = editor;
+			}
+		}
+
+		// Add the tab stacks in order of appearance
+		const tabStacks = new Map<string, TabStackId>();
+		for (const [letter, tabStackEditors] of editorsOfTabStack) {
+			const tabStack = group.addEditorsToTabStack(tabStackEditors).tabStack;
+			assert.ok(tabStack);
+			tabStacks.set(letter, tabStack.id);
+		}
+
+		// Activate the editor marked with `*`
+		if (activeEditor) {
+			group.setActive(activeEditor);
+		}
+
+		// Collapse the tab stacks marked with `^`
+		for (const letter of collapsedTabStacks) {
+			const tabStack = tabStacks.get(letter);
+			assert.ok(tabStack);
+			group.updateTabStack(tabStack, { collapsed: true });
+		}
+
+		// Check that the group is in the requested state
+		assert.strictEqual(tabStackState(group), state, 'the test group is created in the requested state');
+
+		return {
+			group,
+			editor: id => {
+				const editor = editors.get(id);
+				assert.ok(editor);
+
+				return editor;
+			},
+			tabStack: letter => {
+				const tabStack = tabStacks.get(letter);
+				assert.ok(tabStack);
+
+				return tabStack;
+			}
+		};
+	}
+
+	function tabStackStateAfter(state: string, operation: (testGroup: ITabStackTestGroup) => void, editorConfiguration?: Partial<IEditorPartOptions>): string {
+		const testGroup = createTabStackTestGroup(state, editorConfiguration);
+
+		operation(testGroup);
+
+		return tabStackState(testGroup.group);
+	}
+
+	function recordEventKinds(group: EditorGroupModel): GroupModelChangeKind[] {
+		const kinds: GroupModelChangeKind[] = [];
+		disposables.add(group.onDidModelChange(e => kinds.push(e.kind)));
+
+		return kinds;
+	}
+
+	test('tab stacks: a new tab stack gathers its editors after the first one', () => {
+		assert.deepStrictEqual({
+			// Editors in no tab stack
+			inPlace: tabStackStateAfter('0 1 2 3*', ({ group, editor }) => group.addEditorsToTabStack([editor('1'), editor('2')])),
+			reorders: tabStackStateAfter('0 1 2*', ({ group, editor }) => group.addEditorsToTabStack([editor('0'), editor('2')])),
+
+			// Editors taken from another tab stack
+			fromMiddleOfTabStack: tabStackStateAfter('0a 1a 2a 3a*', ({ group, editor }) => group.addEditorsToTabStack([editor('1'), editor('2')])),
+		}, {
+			inPlace: '0 1a 2a 3*',
+			reorders: '0a 2a* 1',
+			fromMiddleOfTabStack: '0a 3a* 1b 2b',
+		});
+	});
+
+	test('tab stacks: adding reports the pinned editors and the tab stack, and does nothing when no editor can join', () => {
+		function add(state: string, operation: (testGroup: ITabStackTestGroup) => IAddEditorsToTabStackResult) {
+			// Create the group and listen to its events
+			const testGroup = createTabStackTestGroup(state);
+			const events = groupListener(testGroup.group);
+
+			// Add the editors
+			const result = operation(testGroup);
+
+			// Report the resulting state, the result and the TAB_STACKS events
+			return {
+				state: tabStackState(testGroup.group),
+				pinned: result.pinned.map(editorId),
+				tabStack: result.tabStack?.editors.map(editorId),
+				tabStacksEvents: events.tabStacks.length,
+			};
+		}
+
+		assert.deepStrictEqual({
+			// Some editors join
+			skipsStickyAndPinsPreview: add('0s 1 2?*', ({ group, editor }) => group.addEditorsToTabStack([editor('0'), editor('2')])),
+
+			// No editor can join
+			alreadyMember: add('0 1a 2a 3*', ({ group, editor, tabStack }) => group.addEditorsToTabStack([editor('1')], tabStack('a'))),
+			onlyStickyEditor: add('0s 1 2*', ({ group, editor }) => group.addEditorsToTabStack([editor('0')])),
+			unknownTabStack: add('0 1a 2*', ({ group, editor }) => group.addEditorsToTabStack([editor('0')], 'unknown')),
+			tabStacksOff: add('0 1 2*', ({ group, editor }) => {
+				group.setTabStacksEnabled(false);
+
+				return group.addEditorsToTabStack([editor('0'), editor('1')]);
+			}),
+		}, {
+			skipsStickyAndPinsPreview: { state: '0s 1 2a*', pinned: ['2'], tabStack: ['2'], tabStacksEvents: 1 },
+			alreadyMember: { state: '0 1a 2a 3*', pinned: [], tabStack: ['1', '2'], tabStacksEvents: 0 },
+			onlyStickyEditor: { state: '0s 1 2*', pinned: [], tabStack: undefined, tabStacksEvents: 0 },
+			unknownTabStack: { state: '0 1a 2*', pinned: [], tabStack: undefined, tabStacksEvents: 0 },
+			tabStacksOff: { state: '0 1 2*', pinned: [], tabStack: undefined, tabStacksEvents: 0 },
+		});
+	});
+
+	test('tab stacks: a new tab stack gets the least used color', () => {
+		// Tab stack a takes blue, and all its editors are about to join the new tab stack
+		const wholeTabStack = createTabStackTestGroup('0a 1a 2*');
+
+		// Tab stack a took blue, and its only editor left it
+		const emptiedTabStack = createTabStackTestGroup('0a 1 2*');
+		emptiedTabStack.group.removeEditorsFromTabStack([emptiedTabStack.editor('0')]);
+
+		// Create a new tab stack in each group and compare their colors
+		assert.deepStrictEqual({
+			countsTheTabStackItsEditorsLeave: wholeTabStack.group.addEditorsToTabStack([wholeTabStack.editor('0'), wholeTabStack.editor('1')]).tabStack?.color,
+			skipsAnEmptiedTabStack: emptiedTabStack.group.addEditorsToTabStack([emptiedTabStack.editor('1')]).tabStack?.color,
+		}, {
+			countsTheTabStackItsEditorsLeave: 'purple',
+			skipsAnEmptiedTabStack: 'blue',
+		});
+	});
+
+	test('tab stacks: adding to or removing from a tab stack moves editors through its nearer edge', () => {
+		assert.deepStrictEqual({
+			// Add to tab stack a
+			addFromBothSides: tabStackStateAfter('0 1 2a 3a 4*', ({ group, editor, tabStack }) => group.addEditorsToTabStack([editor('0'), editor('4')], tabStack('a'))),
+			addMemberAndNeighbor: tabStackStateAfter('0 1a 2a 3*', ({ group, editor, tabStack }) => group.addEditorsToTabStack([editor('1'), editor('3')], tabStack('a'))),
+			addFromOtherTabStack: tabStackStateAfter('0a 1a 2b 3b*', ({ group, editor, tabStack }) => group.addEditorsToTabStack([editor('1')], tabStack('b'))),
+
+			// Add the active editor to a collapsed tab stack, which expands it
+			addActiveEditorToCollapsedTabStack: tabStackStateAfter('0a^ 1 2*', ({ group, editor, tabStack }) => group.addEditorsToTabStack([editor('2')], tabStack('a'))),
+
+			// Remove from tab stack a
+			removeNearStart: tabStackStateAfter('0a 1a 2a 3a*', ({ group, editor }) => group.removeEditorsFromTabStack([editor('1')])),
+			removeMiddleGoesToEnd: tabStackStateAfter('0a 1a 2a*', ({ group, editor }) => group.removeEditorsFromTabStack([editor('1')])),
+			removeAll: tabStackStateAfter('0a 1a 2a 3a*', ({ group, editor }) => group.removeEditorsFromTabStack(['0', '1', '2', '3'].map(editor))),
+		}, {
+			addFromBothSides: '1 0a 2a 3a 4a*',
+			addMemberAndNeighbor: '0 1a 2a 3a*',
+			addFromOtherTabStack: '0a 1b 2b 3b*',
+			addActiveEditorToCollapsedTabStack: '0a 2a* 1',
+			removeNearStart: '1 0a 2a 3a*',
+			removeMiddleGoesToEnd: '0a 2a* 1',
+			removeAll: '0 1 2 3*',
+		});
+	});
+
+	test('tab stacks: new editors open at the edge of a tab stack instead of joining it', () => {
+		assert.deepStrictEqual({
+			// Next to the active editor
+			rightOfMiddleMember: tabStackStateAfter('0a 1a* 2a 3', ({ group }) => group.openEditor(input('4'), { pinned: true, active: true })),
+			rightOfLastMember: tabStackStateAfter('0a 1a 2a* 3', ({ group }) => group.openEditor(input('4'), { pinned: true, active: true })),
+			leftOfMiddleMember: tabStackStateAfter('0a 1a* 2a 3', ({ group }) => group.openEditor(input('4'), { pinned: true, active: true }), { openPositioning: 'left' }),
+
+			// At an explicit index, whatever the open positioning
+			indexInsideTabStack: tabStackStateAfter('0a 1a 2a 3*', ({ group }) => group.openEditor(input('4'), { pinned: true, active: true, index: 1 }), { openPositioning: 'left' }),
+			indexAtTabStackStart: tabStackStateAfter('0a 1a 2a 3*', ({ group }) => group.openEditor(input('4'), { pinned: true, active: true, index: 0 })),
+
+			// At the first position, after the sticky editors
+			firstAfterStickyEditors: tabStackStateAfter('0s 1a 2a*', ({ group }) => group.openEditor(input('3'), { pinned: true, active: true }), { openPositioning: 'first' }),
+
+			// In place of the preview editor
+			replacingPreview: tabStackStateAfter('0a 1a* 2a 3?', ({ group }) => group.openEditor(input('4'), { pinned: false, active: true })),
+			replacingPreviewLeftOfTabStack: tabStackStateAfter('0? 1a 2a* 3', ({ group }) => group.openEditor(input('4'), { pinned: false, active: true })),
+		}, {
+			rightOfMiddleMember: '0a 1a 2a 4* 3',
+			rightOfLastMember: '0a 1a 2a 4* 3',
+			leftOfMiddleMember: '4* 0a 1a 2a 3',
+			indexInsideTabStack: '0a 1a 2a 4* 3',
+			indexAtTabStackStart: '4* 0a 1a 2a 3',
+			firstAfterStickyEditors: '0s 3* 1a 2a',
+			replacingPreview: '0a 1a 2a 4?*',
+			replacingPreviewLeftOfTabStack: '1a 2a 4?* 3',
+		});
+	});
+
+	test('tab stacks: new editors opened with the tabStack option join it next to its editors', () => {
+		assert.deepStrictEqual({
+			// Next to the named tab stack: joins it
+			atTabStackStart: tabStackStateAfter('0a 1a 2a 3*', ({ group, tabStack }) => group.openEditor(input('4'), { pinned: true, active: true, index: 0, tabStack: tabStack('a') })),
+			atTabStackEnd: tabStackStateAfter('0a 1a 2a 3*', ({ group, tabStack }) => group.openEditor(input('4'), { pinned: true, active: true, index: 3, tabStack: tabStack('a') })),
+			asPreview: tabStackStateAfter('0a 1a 2*', ({ group, tabStack }) => group.openEditor(input('3'), { pinned: false, active: true, index: 1, tabStack: tabStack('a') })),
+
+			// Not next to the named tab stack: opens as without the option
+			awayFromTabStack: tabStackStateAfter('0a 1a 2 3*', ({ group, tabStack }) => group.openEditor(input('4'), { pinned: true, active: true, index: 3, tabStack: tabStack('a') })),
+			insideOtherTabStack: tabStackStateAfter('0a 1a 2a 3b 4*', ({ group, tabStack }) => group.openEditor(input('5'), { pinned: true, active: true, index: 1, tabStack: tabStack('b') })),
+
+			// Opened sticky: never joins
+			sticky: tabStackStateAfter('0a 1a 2*', ({ group, tabStack }) => group.openEditor(input('3'), { sticky: true, active: true, tabStack: tabStack('a') })),
+		}, {
+			atTabStackStart: '4a* 0a 1a 2a 3',
+			atTabStackEnd: '0a 1a 2a 4a* 3',
+			asPreview: '0a 3a* 1a 2',
+			awayFromTabStack: '0a 1a 2 4* 3',
+			insideOtherTabStack: '0a 1a 2a 5* 3b 4',
+			sticky: '3s* 0a 1a 2',
+		});
+	});
+
+	test('tab stacks: turning tab stacks off takes every editor out of its tab stack, and a new group starts with them off', () => {
+		// A new group, where tab stacks were never turned on
+		const newGroup = createEditorGroupModel();
+		const newGroupEditors = [input('0'), input('1')];
+		for (const editor of newGroupEditors) {
+			newGroup.openEditor(editor, { pinned: true, active: true });
+		}
+		newGroup.addEditorsToTabStack(newGroupEditors);
+
+		assert.deepStrictEqual({
+			// Turned off
+			turnedOff: tabStackStateAfter('0 1a* 2a 3b 4b 5', ({ group }) => group.setTabStacksEnabled(false)),
+			formerMemberUnpinned: tabStackStateAfter('0a 1a* 2', ({ group, editor }) => {
+				group.setTabStacksEnabled(false);
+				group.unpin(editor('0'));
+			}),
+
+			// Turned off and on again
+			turnedOnAgain: tabStackStateAfter('0 1 2*', ({ group, editor }) => {
+				group.setTabStacksEnabled(false);
+				group.setTabStacksEnabled(true);
+				group.addEditorsToTabStack([editor('0'), editor('1')]);
+			}),
+
+			// Never turned on
+			newGroup: tabStackState(newGroup),
+		}, {
+			turnedOff: '0 1* 2 3 4 5',
+			formerMemberUnpinned: '0? 1* 2',
+			turnedOnAgain: '0a 1a 2*',
+			newGroup: '0 1*',
+		});
+	});
+
+	test('tab stacks: a moved editor keeps, joins or leaves a tab stack by where it lands', () => {
+		assert.deepStrictEqual({
+			// Keeps its tab stack
+			toStartOfOwnTabStack: tabStackStateAfter('0 1a 2a 3a 4*', ({ group, editor }) => group.moveEditor(editor('3'), 1)),
+			toEndOfOwnTabStack: tabStackStateAfter('0 1a 2a 3a 4*', ({ group, editor }) => group.moveEditor(editor('1'), 3)),
+			singleMemberTabStack: tabStackStateAfter('0a 1 2 3b 4*', ({ group, editor }) => group.moveEditor(editor('0'), 2)),
+
+			// Joins the tab stack it lands inside
+			previewIntoTabStack: tabStackStateAfter('0a 1a 2?*', ({ group, editor }) => group.moveEditor(editor('2'), 1)),
+			existingEditorOpenedInside: tabStackStateAfter('0a 1a 2 3*', ({ group, editor }) => group.openEditor(editor('2'), { index: 1 })),
+
+			// Leaves its tab stack or joins none
+			outOfTabStack: tabStackStateAfter('0 1 2a 3a 4*', ({ group, editor }) => group.moveEditor(editor('2'), 1)),
+			betweenTabStacks: tabStackStateAfter('0 1a 2a 3b 4b*', ({ group, editor }) => group.moveEditor(editor('0'), 2)),
+			intoStickyEditors: tabStackStateAfter('0s 1a 2*', ({ group, editor }) => group.moveEditor(editor('1'), 0)),
+			unstickNextToTabStack: tabStackStateAfter('0s 1s 2a 3a*', ({ group, editor }) => group.unstick(editor('0'))),
+		}, {
+			toStartOfOwnTabStack: '0 3a 1a 2a 4*',
+			toEndOfOwnTabStack: '0 2a 3a 1a 4*',
+			singleMemberTabStack: '1 2 0a 3b 4*',
+			previewIntoTabStack: '0a 2a* 1a',
+			existingEditorOpenedInside: '0a 2a 1a 3*',
+			outOfTabStack: '0 2 1 3a 4*',
+			betweenTabStacks: '1a 2a 0 3b 4b*',
+			intoStickyEditors: '1s 0s 2*',
+			unstickNextToTabStack: '1s 0 2a 3a*',
+		});
+	});
+
+	test('tab stacks: the moves of an operation and its EDITOR_MOVE events replay to the final order', () => {
+		function replay(order: readonly EditorInput[], moves: readonly { from: number; to: number }[]): EditorInput[] {
+			const replayed = order.slice(0);
+			for (const { from, to } of moves) {
+				replayed.splice(to, 0, ...replayed.splice(from, 1));
+			}
+
+			return replayed;
+		}
+
+		function stateAfterReplay(state: string, operation: (testGroup: ITabStackTestGroup) => ITabStackOperationResult): { state: string; events: string; moves: string } {
+			// Note the order and listen to the events before the operation
+			const testGroup = createTabStackTestGroup(state);
+			const initialOrder = testGroup.group.getEditors(EditorsOrder.SEQUENTIAL);
+			const events = groupListener(testGroup.group);
+
+			// Run the operation
+			const { moves } = operation(testGroup);
+
+			// Report the state, and the orders that replaying the move events and the returned moves on the initial order give
+			return {
+				state: tabStackState(testGroup.group),
+				events: replay(initialOrder, events.moved.map(e => ({ from: e.oldEditorIndex, to: e.editorIndex }))).map(editorId).join(' '),
+				moves: replay(initialOrder, moves).map(editorId).join(' '),
+			};
+		}
+
+		assert.deepStrictEqual({
+			// Add to a new or an existing tab stack
+			addToNewTabStack: stateAfterReplay('0 1 2 3 4*', ({ group, editor }) => group.addEditorsToTabStack([editor('0'), editor('2'), editor('4')])),
+			addToTabStack: stateAfterReplay('0 1 2a 3a 4 5*', ({ group, editor, tabStack }) => group.addEditorsToTabStack([editor('0'), editor('1'), editor('5')], tabStack('a'))),
+
+			// Remove from one or two tab stacks
+			removeFromTabStack: stateAfterReplay('0a 1a 2a 3a 4*', ({ group, editor }) => group.removeEditorsFromTabStack([editor('1'), editor('2')])),
+			removeFromTwoTabStacks: stateAfterReplay('0a 1a 2a 3b 4b 5b*', ({ group, editor }) => group.removeEditorsFromTabStack([editor('1'), editor('4')])),
+
+			// Move a tab stack, or several editors at once
+			moveTabStack: stateAfterReplay('0a 1a 2 3 4*', ({ group, tabStack }) => group.moveTabStack(tabStack('a'), 2)),
+			moveEditorsWithinGroup: stateAfterReplay('0 1 2 3 4*', ({ group, editor }) => group.moveEditorsWithinGroup([editor('0'), editor('2'), editor('4')], 1)),
+		}, {
+			addToNewTabStack: { state: '0a 2a 4a* 1 3', events: '0 2 4 1 3', moves: '0 2 4 1 3' },
+			addToTabStack: { state: '0a 1a 2a 3a 5a* 4', events: '0 1 2 3 5 4', moves: '0 1 2 3 5 4' },
+			removeFromTabStack: { state: '1 0a 3a 2 4*', events: '1 0 3 2 4', moves: '1 0 3 2 4' },
+			removeFromTwoTabStacks: { state: '0a 2a 1 3b 5b* 4', events: '0 2 1 3 5 4', moves: '0 2 1 3 5 4' },
+			moveTabStack: { state: '2 3 0a 1a 4*', events: '2 3 0 1 4', moves: '2 3 0 1 4' },
+			moveEditorsWithinGroup: { state: '1 0 2 4* 3', events: '1 0 2 4 3', moves: '1 0 2 4 3' },
+		});
+	});
+
+	test('tab stacks: sticking takes an editor out of its tab stack, and members cannot be unpinned', () => {
+		assert.deepStrictEqual({
+			// Stick a member, which leaves its tab stack
+			stick: tabStackStateAfter('0 1a 2a 3*', ({ group, editor }) => group.stick(editor('2'))),
+
+			// Unpin a member, which stays pinned
+			unpin: tabStackStateAfter('0a 1a*', ({ group, editor }) => group.unpin(editor('0'))),
+		}, {
+			stick: '2s 0 1a 3*',
+			unpin: '0a 1a*',
+		});
+	});
+
+	test('tab stacks: clone copies tab stacks without sharing their state, and keeps them on', () => {
+		// Clone a group with two tab stacks
+		const { group, editor } = createTabStackTestGroup('0 1a 2a 3b 4*');
+		const clone = disposables.add(group.clone());
+		const cloned = tabStackState(clone);
+
+		// Remove editor 1 from both, which would empty tab stack a of the original if they shared state
+		clone.removeEditorsFromTabStack([editor('1')]);
+		group.removeEditorsFromTabStack([editor('1')]);
+
+		// Add to a new tab stack in the clone only
+		clone.addEditorsToTabStack([editor('4')]);
+
+		// Compare the clone right after cloning, the clone now, and the original
+		assert.deepStrictEqual({
+			cloned,
+			clone: tabStackState(clone),
+			original: tabStackState(group),
+		}, {
+			cloned: '0 1a 2a 3b 4*',
+			clone: '0 1 2a 3b 4c*',
+			original: '0 1 2a 3b 4*',
+		});
+	});
+
+	test('tab stacks: operations fire one TAB_STACKS event for a change of tab stacks, and none without one', () => {
+		function eventsOf(state: string, operation: (testGroup: ITabStackTestGroup) => void): number {
+			// Listen to the events of a new group, then run the operation
+			const testGroup = createTabStackTestGroup(state);
+			const events = groupListener(testGroup.group);
+			operation(testGroup);
+
+			return events.tabStacks.length;
+		}
+
+		assert.deepStrictEqual({
+			// Operations that change tab stacks
+			removeTwoFromTabStack: eventsOf('0a 1a 2a 3*', ({ group, editor }) => group.removeEditorsFromTabStack([editor('0'), editor('1')])),
+			stickMember: eventsOf('0 1a 2a 3*', ({ group, editor }) => group.stick(editor('1'))),
+			closeMember: eventsOf('0 1a 2a 3*', ({ group, editor }) => group.closeEditor(editor('1'))),
+			moveIntoTabStack: eventsOf('0 1a 2a 3*', ({ group, editor }) => group.moveEditor(editor('0'), 1)),
+			openWithTabStackOption: eventsOf('0a 1a 2*', ({ group, tabStack }) => group.openEditor(input('3'), { pinned: true, active: true, index: 1, tabStack: tabStack('a') })),
+			turnOffTwice: eventsOf('0a 1a* 2', ({ group }) => {
+				group.setTabStacksEnabled(false);
+				group.setTabStacksEnabled(false);
+			}),
+			rename: eventsOf('0 1a 2a 3*', ({ group, tabStack }) => group.updateTabStack(tabStack('a'), { label: 'Auth' })),
+
+			// Operations that change no tab stack
+			removeEditorInNoTabStack: eventsOf('0 1a 2*', ({ group, editor }) => group.removeEditorsFromTabStack([editor('0')])),
+			closeEditorOutsideTabStacks: eventsOf('0 1a 2a 3*', ({ group, editor }) => group.closeEditor(editor('0'))),
+			moveWithinTabStack: eventsOf('0 1a 2a 3*', ({ group, editor }) => group.moveEditor(editor('2'), 1)),
+			openOutsideTabStacks: eventsOf('0 1a 2a 3*', ({ group }) => group.openEditor(input('4'), { pinned: true, active: true })),
+			renameToSameLabel: eventsOf('0 1a 2a 3*', ({ group, tabStack }) => group.updateTabStack(tabStack('a'), { label: '' })),
+			moveTabStack: eventsOf('0 1a 2a 3 4*', ({ group, tabStack }) => group.moveTabStack(tabStack('a'), 2)),
+		}, {
+			removeTwoFromTabStack: 1,
+			stickMember: 1,
+			closeMember: 1,
+			moveIntoTabStack: 1,
+			openWithTabStackOption: 1,
+			turnOffTwice: 1,
+			rename: 1,
+			removeEditorInNoTabStack: 0,
+			closeEditorOutsideTabStacks: 0,
+			moveWithinTabStack: 0,
+			openOutsideTabStacks: 0,
+			renameToSameLabel: 0,
+			moveTabStack: 0,
+		});
+	});
+
+	test('tab stacks: restoring the snapshot from before a new tab stack undoes it, also its moves and the tab stacks it emptied, unless the group changed since', () => {
+		const createAndRestore = (state: string, editors: readonly string[], changeInBetween?: (testGroup: ITabStackTestGroup) => void) => {
+			const testGroup = createTabStackTestGroup(state);
+			const { group, editor } = testGroup;
+			const tabStacksBefore = group.tabStacks.map(({ id, label, color, collapsed }) => ({ id, label, color, collapsed }));
+			const before = group.getTabStackSnapshot();
+			group.addEditorsToTabStack(editors.map(editor));
+			const created = tabStackState(group);
+			const after = group.getTabStackSnapshot();
+			changeInBetween?.(testGroup);
+			const restored = group.restoreTabStackSnapshot(before, after) !== undefined;
+
+			return {
+				created,
+				restored,
+				state: tabStackState(group),
+				sameTabStacks: JSON.stringify(group.tabStacks.map(({ id, label, color, collapsed }) => ({ id, label, color, collapsed }))) === JSON.stringify(tabStacksBefore)
+			};
+		};
+
+		assert.deepStrictEqual({
+			adjacent: createAndRestore('0 1 2 3*', ['1', '2']),
+			apart: createAndRestore('0 1 2*', ['0', '2']),
+			emptiesOtherTabStack: createAndRestore('0a^ 1a^ 2b 3*', ['0', '1']),
+			changedInBetween: createAndRestore('0 1 2 3*', ['1', '2'], ({ group }) => group.openEditor(input('4'), { pinned: true, active: true })),
+		}, {
+			adjacent: { created: '0 1a 2a 3*', restored: true, state: '0 1 2 3*', sameTabStacks: true },
+			apart: { created: '0a 2a* 1', restored: true, state: '0 1 2*', sameTabStacks: true },
+			emptiesOtherTabStack: { created: '0a 1a 2b 3*', restored: true, state: '0a^ 1a^ 2b 3*', sameTabStacks: true },
+			changedInBetween: { created: '0 1a 2a 3*', restored: false, state: '0 1a 2a 3 4*', sameTabStacks: false },
+		});
+	});
+
+	test('tab stacks: turning tab stacks off hides every tab stack, keeps the editors and opens editors as without tab stacks', () => {
+		const { group } = createTabStackTestGroup('0 1a* 2a 3b^ 4b^ 5');
+
+		group.setTabStacksEnabled(false);
+		const state = tabStackState(group);
+		group.openEditor(input('6'), { pinned: true, active: true });
+
+		assert.deepStrictEqual({ state, afterOpen: tabStackState(group) }, { state: '0 1* 2 3 4 5', afterOpen: '0 1 6* 2 3 4 5' });
+	});
+
+	test('tab stacks: turning tab stacks on again restores the hidden tab stacks with their state, as the longest run of their editors that are still open, adjacent and not sticky', () => {
+		function afterHiding(state: string, whileHidden: (testGroup: ITabStackTestGroup) => void): string {
+			return tabStackStateAfter(state, testGroup => {
+				testGroup.group.setTabStacksEnabled(false);
+				whileHidden(testGroup);
+				testGroup.group.setTabStacksEnabled(true);
+			});
+		}
+
+		const named = createTabStackTestGroup('0a 1a 2b^ 3*');
+		named.group.updateTabStack(named.tabStack('a'), { label: 'Auth', color: '#123456' });
+		named.group.setTabStacksEnabled(false);
+		named.group.setTabStacksEnabled(true);
+
+		const closed = createTabStackTestGroup('0 1a 2a 3*');
+		closed.group.setTabStacksEnabled(false);
+		closed.group.closeEditor(closed.editor('1'));
+		const hiddenAfterClose = closed.group.getTabStackRecords().map(record => record.editors.map(editorId));
+		closed.group.setTabStacksEnabled(true);
+
+		const preview = createTabStackTestGroup('0 1a 2a 3*');
+		preview.group.setTabStacksEnabled(false);
+		preview.group.unpin(preview.editor('2'));
+		const previewResult = preview.group.setTabStacksEnabled(true);
+
+		assert.deepStrictEqual({
+			named: { state: tabStackState(named.group), tabStacks: named.group.tabStacks.map(({ label, color, collapsed }) => ({ label, color, collapsed })) },
+			closed: { hiddenAfterClose, state: tabStackState(closed.group) },
+			preview: { state: tabStackState(preview.group), pinned: previewResult.pinned.map(editorId) },
+			split: afterHiding('0 1a* 2a 3a 4', ({ group }) => group.openEditor(input('5'), { pinned: true, active: true })),
+			tie: afterHiding('0 1a* 2a 3', ({ group }) => group.openEditor(input('4'), { pinned: true, active: true, index: 2 })),
+			stuck: afterHiding('0 1a 2a 3*', ({ group, editor }) => group.stick(editor('1'))),
+			active: afterHiding('0a^ 1a^ 2*', ({ group, editor }) => group.setActive(editor('0'))),
+		}, {
+			named: { state: '0a 1a 2b^ 3*', tabStacks: [{ label: 'Auth', color: '#123456', collapsed: false }, { label: '', color: 'purple', collapsed: true }] },
+			closed: { hiddenAfterClose: [['2']], state: '0 2a 3*' },
+			preview: { state: '0 1a 2a 3*', pinned: ['2'] },
+			split: '0 1 5* 2a 3a 4',
+			tie: '0 1a 4* 2 3',
+			stuck: '1s 0 2a 3*',
+			active: '0a* 1a 2',
+		});
+	});
+
+	test('tab stacks: adding tab stacks from records keeps their name, color and collapsed state, pins preview editors, skips sticky editors and editors of other tab stacks, and keeps the longest run', () => {
+		function afterAdding(state: string, records: (testGroup: ITabStackTestGroup) => ITabStackRecord[]): { state: string; pinned: string[] } {
+			const testGroup = createTabStackTestGroup(state);
+			const result = testGroup.group.addTabStacks(records(testGroup));
+
+			return { state: tabStackState(testGroup.group), pinned: result.pinned.map(editorId) };
+		}
+
+		const colors = createTabStackTestGroup('0 1 2*');
+		colors.group.addTabStacks([
+			{ editors: [colors.editor('1')], label: 'Auth', color: 'red', collapsed: true },
+			{ editors: [colors.editor('0')], label: '', color: '#123456', collapsed: false },
+			{ editors: [colors.editor('2')], label: '', color: '#abcd', collapsed: false },
+		]);
+
+		const hidden = createTabStackTestGroup('0 1 2*');
+		hidden.group.setTabStacksEnabled(false);
+		hidden.group.addTabStacks([{ editors: [input('0'), input('1')], label: 'Copies', color: 'green', collapsed: false }]);
+		const hiddenRecords = hidden.group.getTabStackRecords().map(record => record.editors.map(editor => editor === hidden.editor(editorId(editor))));
+		hidden.group.setTabStacksEnabled(true);
+
+		assert.deepStrictEqual({
+			collapsedWithPreview: afterAdding('0 1 2? 3*', ({ editor }) => [{ editors: [editor('1'), editor('2')], label: 'Auth', color: 'red', collapsed: true }]),
+			sticky: afterAdding('0s 1 2*', ({ editor }) => [{ editors: [editor('0'), editor('1')], label: '', color: 'blue', collapsed: false }]),
+			otherTabStack: afterAdding('0a 1 2*', ({ editor }) => [{ editors: [editor('0'), editor('1')], label: '', color: 'blue', collapsed: false }]),
+			longestRun: afterAdding('0 1 2 3 4*', ({ editor }) => [{ editors: [editor('0'), editor('2'), editor('3')], label: '', color: 'blue', collapsed: false }]),
+			colors: { state: tabStackState(colors.group), tabStacks: colors.group.tabStacks.map(({ label, color }) => ({ label, color })) },
+			whileHidden: { hiddenRecords, state: tabStackState(hidden.group) },
+		}, {
+			collapsedWithPreview: { state: '0 1a^ 2a^ 3*', pinned: ['2'] },
+			sticky: { state: '0s 1a 2*', pinned: [] },
+			otherTabStack: { state: '0a 1b 2*', pinned: [] },
+			longestRun: { state: '0 1 2a 3a 4*', pinned: [] },
+			colors: { state: '0a 1b^ 2c*', tabStacks: [{ label: '', color: '#123456' }, { label: 'Auth', color: 'red' }, { label: '', color: 'gray' }] },
+			whileHidden: { hiddenRecords: [[true, true]], state: '0a 1a 2*' },
+		});
+	});
+
+	test('tab stacks: while tab stacks are off no tab stack is added, serializing keeps the hidden tab stacks, and a group restored off shows them once on', () => {
+		const hiddenGroup = createTabStackTestGroup('0a 1a* 2').group;
+		hiddenGroup.setTabStacksEnabled(false);
+		const serialized = hiddenGroup.serialize();
+
+		const restoredGroup = createTabStackEditorGroupModel(serialized, undefined, false);
+		const restoredOff = tabStackState(restoredGroup);
+		restoredGroup.setTabStacksEnabled(false);
+		restoredGroup.setTabStacksEnabled(true);
+
+		assert.deepStrictEqual({
+			added: tabStackStateAfter('0 1 2?*', ({ group, editor }) => {
+				group.setTabStacksEnabled(false);
+				group.addEditorsToTabStack([editor('0'), editor('2')]);
+			}),
+			serialized: JSON.parse(JSON.stringify(serialized.tabStacks)),
+			restoredOff,
+			restoredOn: tabStackState(restoredGroup),
+		}, {
+			added: '0 1 2?*',
+			serialized: [{ label: '', color: 'blue', editors: [0, 1] }],
+			restoredOff: '0 1* 2',
+			restoredOn: '0a 1a* 2',
+		});
+	});
+
+	test('tab stacks: hiding and restoring tab stacks fire one TAB_STACKS event each, and none without tab stacks or without a change', () => {
+		function eventKinds(state: string): GroupModelChangeKind[][] {
+			const { group } = createTabStackTestGroup(state);
+			const kinds = recordEventKinds(group);
+
+			group.setTabStacksEnabled(false);
+			const off = kinds.splice(0);
+			group.setTabStacksEnabled(true);
+			const on = kinds.splice(0);
+			group.setTabStacksEnabled(true);
+
+			return [off, on, kinds];
+		}
+
+		assert.deepStrictEqual({
+			withTabStacks: eventKinds('0 1a 2a 3*'),
+			withoutTabStacks: eventKinds('0 1 2*'),
+		}, {
+			withTabStacks: [[GroupModelChangeKind.TAB_STACKS], [GroupModelChangeKind.TAB_STACKS], []],
+			withoutTabStacks: [[], [], []],
+		});
+	});
+
+	test('tab stacks: clone keeps whether tab stacks are on, and the hidden tab stacks', () => {
+		const enabled = createTabStackTestGroup('0 1 2*');
+		const enabledClone = disposables.add(enabled.group.clone());
+		enabledClone.addEditorsToTabStack([enabled.editor('1')]);
+
+		const hidden = createTabStackTestGroup('0 1a 2a 3*');
+		hidden.group.setTabStacksEnabled(false);
+		const hiddenClone = disposables.add(hidden.group.clone());
+		const hiddenInClone = tabStackState(hiddenClone);
+		hiddenClone.setTabStacksEnabled(true);
+
+		assert.deepStrictEqual({
+			enabledClone: tabStackState(enabledClone),
+			hiddenInClone,
+			hiddenCloneOn: tabStackState(hiddenClone),
+			hiddenOriginal: tabStackState(hidden.group),
+		}, {
+			enabledClone: '0 1a 2*',
+			hiddenInClone: '0 1 2 3*',
+			hiddenCloneOn: '0 1a 2a 3*',
+			hiddenOriginal: '0 1 2 3*',
+		});
+	});
+
+	test('tab stacks: moving editors within the group honors the target tab stack when it keeps tab stacks adjacent', () => {
+		assert.deepStrictEqual({
+			joinsTargetTabStack: tabStackStateAfter('0a 1a 2 3*', ({ group, editor, tabStack }) => group.moveEditorsWithinGroup([editor('2')], 2, tabStack('a'))),
+			leavesForNull: tabStackStateAfter('0a 1a 2a 3*', ({ group, editor }) => group.moveEditorsWithinGroup([editor('2')], 2, null)),
+			nullInsideTabStackFallsBack: tabStackStateAfter('0a 1a 2a 3*', ({ group, editor }) => group.moveEditorsWithinGroup([editor('3')], 1, null)),
+			distantTargetFallsBack: tabStackStateAfter('0a 1a 2 3 4*', ({ group, editor, tabStack }) => group.moveEditorsWithinGroup([editor('3')], 3, tabStack('a'))),
+			wholeTabStackStaysTogether: tabStackStateAfter('0 1a 2a 3 4*', ({ group, editor }) => group.moveEditorsWithinGroup([editor('1'), editor('2')], 3)),
+		}, {
+			joinsTargetTabStack: '0a 1a 2a 3*',
+			leavesForNull: '0a 1a 2 3*',
+			nullInsideTabStackFallsBack: '0a 3a* 1a 2a',
+			distantTargetFallsBack: '0a 1a 2 3 4*',
+			wholeTabStackStaysTogether: '0 3 4* 1a 2a',
+		});
+	});
+
+	test('tab stacks: preview editors that join a tab stack by moving are pinned', () => {
+		const testGroup = createTabStackTestGroup('0a 1a 2?*');
+
+		const result = testGroup.group.moveEditorsWithinGroup([testGroup.editor('2')], 1);
+
+		assert.deepStrictEqual({
+			state: tabStackState(testGroup.group),
+			pinned: result.pinned.map(editorId),
+			singleMove: tabStackStateAfter('0a 1a 2?*', ({ group, editor }) => group.moveEditor(editor('2'), 1)),
+		}, {
+			state: '0a 2a* 1a',
+			pinned: ['2'],
+			singleMove: '0a 2a* 1a',
+		});
+	});
+
+	test('tab stacks: moving a tab stack moves all of its editors and never lands inside another tab stack', () => {
+		assert.deepStrictEqual({
+			right: tabStackStateAfter('1 2a 3a 4 5*', ({ group, tabStack }) => group.moveTabStack(tabStack('a'), 2)),
+			left: tabStackStateAfter('1 2 3a 4a 5*', ({ group, tabStack }) => group.moveTabStack(tabStack('a'), 0)),
+			rightIntoTabStack: tabStackStateAfter('0a 1a 2b 3b 4*', ({ group, tabStack }) => group.moveTabStack(tabStack('a'), 1)),
+			leftIntoTabStack: tabStackStateAfter('0 1a 2a 3b 4b*', ({ group, tabStack }) => group.moveTabStack(tabStack('b'), 2)),
+			beforeStickyEditors: tabStackStateAfter('0s 1 2a 3a*', ({ group, tabStack }) => group.moveTabStack(tabStack('a'), 0)),
+		}, {
+			right: '1 4 2a 3a 5*',
+			left: '3a 4a 1 2 5*',
+			rightIntoTabStack: '2a 3a 0b 1b 4*',
+			leftIntoTabStack: '0 3a 4a* 1b 2b',
+			beforeStickyEditors: '0s 2a 3a* 1',
+		});
+	});
+
+	test('tab stacks: closing the active editor activates an editor that is not hidden in a collapsed tab stack', () => {
+		assert.deepStrictEqual({
+			mostRecentlyActive: tabStackStateAfter('0 1a^ 2a^ 3*', ({ group, editor }) => group.closeEditor(editor('3'))),
+			nextToTheRight: tabStackStateAfter('0 1* 2a^ 3a^ 4', ({ group, editor }) => group.closeEditor(editor('1')), { focusRecentEditorAfterClose: false }),
+			onlyHiddenEditorsLeft: tabStackStateAfter('0a^ 1*', ({ group, editor }) => group.closeEditor(editor('1'))),
+		}, {
+			mostRecentlyActive: '0* 1a^ 2a^',
+			nextToTheRight: '0 2a^ 3a^ 4*',
+			onlyHiddenEditorsLeft: '0a*',
+		});
+	});
+
+	test('tab stacks: collapsing the tab stack of the active editor activates the nearest visible editor', () => {
+		const collapse = ({ group, tabStack }: ITabStackTestGroup) => group.updateTabStack(tabStack('a'), { collapsed: true });
+
+		assert.deepStrictEqual({
+			right: tabStackStateAfter('0 1a 2a* 3 4', collapse),
+			left: tabStackStateAfter('0 1 2 3a* 4a', collapse),
+			noVisibleEditor: tabStackStateAfter('0a 1a*', collapse),
+		}, {
+			right: '0 1a^ 2a^ 3* 4',
+			left: '0 1 2* 3a^ 4a^',
+			noVisibleEditor: '0a 1a*',
+		});
+	});
+
+	test('tab stacks: collapsing a tab stack removes its editors from the selection', () => {
+		function selectionAfterCollapse(state: string, activeId: string): string[] {
+			const { group, editor, tabStack } = createTabStackTestGroup(state);
+			group.setSelection(editor(activeId), ['0', '1', '2', '3'].filter(id => id !== activeId).map(editor));
+
+			group.updateTabStack(tabStack('a'), { collapsed: true });
+			tabStackState(group); // asserts the tab stack invariants
+
+			return group.selectedEditors.map(selectedEditor => `${editorId(selectedEditor)}${group.isActive(selectedEditor) ? '*' : ''}`);
+		}
+
+		assert.deepStrictEqual({
+			inactiveTabStack: selectionAfterCollapse('0 1a 2a 3*', '3'),
+			activeTabStack: selectionAfterCollapse('0 1a 2a* 3', '2'),
+		}, {
+			inactiveTabStack: ['0', '3*'],
+			activeTabStack: ['0', '3*'],
+		});
+	});
+
+	test('tab stacks: selected editors that end up hidden in a collapsed tab stack leave the selection', () => {
+		function afterJoining(state: string, selectedIds: string[], operation: (testGroup: ITabStackTestGroup) => void): string {
+			const testGroup = createTabStackTestGroup(state);
+			const [activeId, ...inactiveIds] = selectedIds;
+			testGroup.group.setSelection(testGroup.editor(activeId), inactiveIds.map(testGroup.editor));
+
+			operation(testGroup);
+
+			return `${tabStackState(testGroup.group)} | ${testGroup.group.selectedEditors.map(editorId).join(' ')}`;
+		}
+
+		assert.deepStrictEqual({
+			added: afterJoining('0* 1 2a^ 3', ['0', '1', '3'], ({ group, editor, tabStack }) => group.addEditorsToTabStack([editor('1')], tabStack('a'))),
+			moved: afterJoining('0* 1 2a^ 3a^ 4', ['0', '1', '4'], ({ group, editor }) => group.moveEditor(editor('4'), 3)),
+			addedWithActiveEditor: afterJoining('0 1* 2a^', ['1', '0'], ({ group, editor, tabStack }) => group.addEditorsToTabStack([editor('0'), editor('1')], tabStack('a'))),
+		}, {
+			added: '0* 1a^ 2a^ 3 | 0 3',
+			moved: '0* 1 2a^ 4a^ 3a^ | 0 1',
+			addedWithActiveEditor: '0a 1a* 2a | 0 1',
+		});
+	});
+
+	test('tab stacks: activating a hidden editor expands its tab stack before the editor becomes active', () => {
+		const testGroup = createTabStackTestGroup('0 1a^ 2a^ 3*');
+		const kinds = recordEventKinds(testGroup.group);
+
+		testGroup.group.setActive(testGroup.editor('1'));
+
+		assert.deepStrictEqual({
+			state: tabStackState(testGroup.group),
+			events: kinds,
+			openExisting: tabStackStateAfter('0 1a^ 2a^ 3*', ({ group, editor }) => group.openEditor(editor('2'), { active: true })),
+		}, {
+			state: '0 1a* 2a 3',
+			events: [GroupModelChangeKind.TAB_STACKS, GroupModelChangeKind.EDITOR_ACTIVE, GroupModelChangeKind.EDITORS_SELECTION],
+			openExisting: '0 1a 2a* 3',
+		});
+	});
+
+	test('tab stacks: updating a tab stack changes its label and color and ignores an invalid color', () => {
+		const { group, tabStack } = createTabStackTestGroup('0a 1a*');
+
+		group.updateTabStack(tabStack('a'), { label: 'Auth', color: '#1A2B3C' });
+		group.updateTabStack(tabStack('a'), { color: '#abcd' });
+
+		assert.deepStrictEqual({
+			state: tabStackState(group),
+			tabStacks: group.tabStacks.map(({ label, color }) => ({ label, color })),
+		}, {
+			state: '0a 1a*',
+			tabStacks: [{ label: 'Auth', color: '#1a2b3c' }],
+		});
+	});
+
+	test('tab stacks: serialize and restore keep tab stacks', () => {
+		const { group, tabStack } = createTabStackTestGroup('0 1a 2a 3b^ 4*');
+		group.updateTabStack(tabStack('a'), { label: 'Auth' });
+		group.updateTabStack(tabStack('b'), { color: '#1a2b3c' });
+
+		const serialized = group.serialize();
+		const restored = createTabStackEditorGroupModel(serialized);
+
+		assert.deepStrictEqual({
+			serialized: JSON.parse(JSON.stringify(serialized.tabStacks)),
+			state: tabStackState(restored),
+			tabStacks: restored.tabStacks.map(({ label, color }) => ({ label, color })),
+		}, {
+			serialized: [
+				{ label: 'Auth', color: 'blue', editors: [1, 2] },
+				{ label: '', color: '#1a2b3c', collapsed: true, editors: [3] },
+			],
+			state: '0 1a 2a 3b^ 4*',
+			tabStacks: [{ label: 'Auth', color: 'blue' }, { label: '', color: '#1a2b3c' }],
+		});
+	});
+
+	test('tab stacks: serialize skips editors that cannot be serialized', () => {
+		const group = createTabStackEditorGroupModel();
+		const editors = [input('0'), input('1', true), input('2'), input('3', true), input('4'), input('5')];
+		for (const editor of editors) {
+			group.openEditor(editor, { pinned: true, active: true });
+		}
+		group.addEditorsToTabStack([editors[2], editors[3], editors[4]]);
+
+		const serialized = group.serialize();
+
+		assert.deepStrictEqual({
+			serialized: serialized.tabStacks?.map(tabStack => tabStack.editors),
+			restored: tabStackState(createTabStackEditorGroupModel(serialized)),
+		}, {
+			serialized: [[1, 2]],
+			restored: '0 2a 4a 5*',
+		});
+	});
+
+	test('tab stacks: restore drops invalid members and keeps the longest run of adjacent members of each tab stack', () => {
+		const data: ISerializedEditorGroupModel = {
+			id: 1,
+			editors: [serializedTestEditor('0'), serializedTestEditor('1'), { id: 'unknownEditorType', value: '' }, serializedTestEditor('3'), serializedTestEditor('4'), serializedTestEditor('5'), serializedTestEditor('6'), serializedTestEditor('7')],
+			mru: [0, 1, 2, 3, 4, 5, 6],
+			sticky: 0,
+			tabStacks: [
+				{ label: 'with sticky editor', color: 'blue', editors: [0, 1] },
+				{ label: 'with missing editor', color: 'not a color', collapsed: true, editors: [2, 3] },
+				{ label: 'with claimed editor', color: 'red', editors: [3, 4] },
+				{ label: 'not adjacent', color: 'green', editors: [5, 7] },
+				{ label: 'with invalid indices', color: 'pink', editors: [6, 99, -1, 1.5] },
+			]
+		};
+		const tabStacksBeforeRestore = JSON.stringify(data.tabStacks);
+
+		const restored = createTabStackEditorGroupModel(data);
+
+		assert.deepStrictEqual({
+			state: tabStackState(restored),
+			tabStacks: restored.tabStacks.map(({ label, color }) => ({ label, color })),
+			dataUnchanged: JSON.stringify(data.tabStacks) === tabStacksBeforeRestore,
+		}, {
+			state: '0s* 1a 3b^ 4c 5d 6e 7',
+			tabStacks: [
+				{ label: 'with sticky editor', color: 'blue' },
+				{ label: 'with missing editor', color: 'gray' },
+				{ label: 'with claimed editor', color: 'red' },
+				{ label: 'not adjacent', color: 'green' },
+				{ label: 'with invalid indices', color: 'pink' },
+			],
+			dataUnchanged: true,
+		});
+	});
+
+	test('tab stacks: restore expands the tab stack of the active editor', () => {
+
+		const restored = createTabStackEditorGroupModel({
+			id: 1,
+			editors: [serializedTestEditor('0'), serializedTestEditor('1'), serializedTestEditor('2')],
+			mru: [0, 1, 2],
+			tabStacks: [{ label: '', color: 'blue', collapsed: true, editors: [0, 1] }]
+		});
+
+		assert.deepStrictEqual(tabStackState(restored), '0a* 1a 2');
+	});
+
+	test('tab stacks: restore keeps a preview editor in its tab stack and pins it', () => {
+		const restored = createTabStackEditorGroupModel({
+			id: 1,
+			editors: [serializedTestEditor('0'), serializedTestEditor('1'), serializedTestEditor('2')],
+			mru: [0, 1, 2],
+			preview: 2,
+			tabStacks: [{ label: '', color: 'blue', editors: [1, 2] }]
+		});
+
+		assert.deepStrictEqual(tabStackState(restored), '0* 1a 2a');
+	});
+
+	test('tab stacks: serialize omits tab stacks when there are none and older state restores without them', () => {
+		const group = createTabStackEditorGroupModel();
+		group.openEditor(input('0'), { pinned: true, active: true });
+
+		const serialized = group.serialize();
+
+		assert.deepStrictEqual({
+			stored: JSON.stringify(serialized).includes('tabStacks'),
+			restored: createTabStackEditorGroupModel(serialized).tabStacks.length,
+		}, {
+			stored: false,
+			restored: 0,
+		});
+	});
+
+	//#endregion
 
 	ensureNoDisposablesAreLeakedInTestSuite();
 });

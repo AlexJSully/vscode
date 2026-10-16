@@ -14,6 +14,8 @@ import { Disposable } from '../../../../base/common/lifecycle.js';
 import { StickyEditorGroupModel, UnstickyEditorGroupModel } from '../../../common/editor/filteredEditorGroupModel.js';
 import { IEditorTitleControlDimensions } from './editorTitleControl.js';
 import { IReadonlyEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
+import { TabStackId } from '../../../common/editor/editorGroupTabStacks.js';
+import { TabStackEditorFocus } from '../../../services/editor/common/editorGroupsService.js';
 
 export class MultiRowEditorControl extends Disposable implements IEditorTabsControl {
 
@@ -179,6 +181,15 @@ export class MultiRowEditorControl extends Disposable implements IEditorTabsCont
 	updateEditorSelections(): void {
 		this.stickyEditorTabsControl.updateEditorSelections();
 		this.unstickyEditorTabsControl.updateEditorSelections();
+	}
+
+	updateTabStacks(): void {
+		this.stickyEditorTabsControl.updateTabStacks();
+		this.unstickyEditorTabsControl.updateTabStacks();
+	}
+
+	editTabStack(tabStack: TabStackId, focus?: TabStackEditorFocus, cancelCreation?: () => void): boolean {
+		return this.stickyEditorTabsControl.editTabStack(tabStack, focus, cancelCreation) || this.unstickyEditorTabsControl.editTabStack(tabStack, focus, cancelCreation);
 	}
 
 	updateEditorLabel(editor: EditorInput): void {

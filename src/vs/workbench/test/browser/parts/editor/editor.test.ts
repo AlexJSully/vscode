@@ -23,7 +23,8 @@ import { EditorResolution, IResourceEditorInput, ITextEditorOptions, TextEditorS
 import { ICodeEditorViewState, IDiffEditorViewState } from '../../../../../editor/common/editorCommon.js';
 import { Position } from '../../../../../editor/common/core/position.js';
 import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
-import { DEFAULT_EDITOR_PART_OPTIONS, fillActiveEditorSelection } from '../../../../browser/parts/editor/editor.js';
+import { DEFAULT_EDITOR_PART_OPTIONS, fillActiveEditorSelection, getEditorPartOptions, isTabStacksEnabled } from '../../../../browser/parts/editor/editor.js';
+import { TestThemeService } from '../../../../../platform/theme/test/common/testThemeService.js';
 import { mock } from '../../../../../base/test/common/mock.js';
 import { Selection } from '../../../../../editor/common/core/selection.js';
 import { TextEditorPaneSelection } from '../../../../browser/parts/editor/textEditor.js';
@@ -466,6 +467,27 @@ suite('Workbench editor utils', () => {
 
 		enforcedOverride.dispose();
 		assert.strictEqual(part.partOptions.tabActionReserveSpace, false);
+	});
+
+	test('tab stacks are off in the default part options, invalid values fall back to it, and tab stacks are only enabled with multiple tabs', () => {
+		const themeService = new TestThemeService();
+		const getOptions = (editor: object) => getEditorPartOptions(new TestConfigurationService({ workbench: { editor } }), themeService);
+
+		assert.deepStrictEqual({
+			default: DEFAULT_EDITOR_PART_OPTIONS.enableTabStacks,
+			configured: getOptions({ enableTabStacks: true }).enableTabStacks,
+			invalid: getOptions({ enableTabStacks: 'yes' }).enableTabStacks,
+			enabledWithMultipleTabs: isTabStacksEnabled(getOptions({ enableTabStacks: true })),
+			enabledWithSingleTab: isTabStacksEnabled(getOptions({ enableTabStacks: true, showTabs: 'single' })),
+			enabledWithoutTabs: isTabStacksEnabled(getOptions({ enableTabStacks: true, showTabs: 'none' }))
+		}, {
+			default: false,
+			configured: true,
+			invalid: false,
+			enabledWithMultipleTabs: true,
+			enabledWithSingleTab: false,
+			enabledWithoutTabs: false
+		});
 	});
 
 	test('title separator follows the inset editor content while tabs remain full width', async () => {
