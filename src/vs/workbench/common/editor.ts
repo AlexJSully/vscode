@@ -1296,7 +1296,6 @@ interface IEditorPartConfiguration {
 	tabSizingFixedMaxWidth?: number;
 	pinnedTabSizing?: 'normal' | 'compact' | 'shrink';
 	pinnedTabsOnSeparateRow?: boolean;
-	enableTabStacks?: boolean;
 	tabHeight?: 'default' | 'compact';
 	preventPinnedEditorClose?: PreventPinnedEditorClose;
 	titleScrollbarSizing?: 'default' | 'large';
@@ -1331,6 +1330,7 @@ interface IEditorPartConfiguration {
 export interface IEditorPartOptions extends DeepRequiredNonNullable<IEditorPartConfiguration> {
 	hasIcons: boolean;
 	showBreadcrumbs?: boolean;
+	enableTabStacks?: boolean;
 }
 
 export interface IEditorPartOptionsChangeEvent {

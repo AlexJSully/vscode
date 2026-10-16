@@ -7,7 +7,7 @@ import './media/editorgroupview.css';
 import { EditorGroupModel, IEditorOpenOptions, IGroupModelChangeEvent, ISerializedEditorGroupModel, isGroupEditorCloseEvent, isGroupEditorOpenEvent, isSerializedEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
 import { getGapAfterTabStack, getSurroundingTabStack, ITabStack, ITabStackOperationResult } from '../../../common/editor/editorGroupTabStacks.js';
 import { GroupIdentifier, CloseDirection, IEditorCloseEvent, IEditorPane, SaveReason, IEditorPartOptionsChangeEvent, EditorsOrder, IVisibleEditorPane, EditorResourceAccessor, EditorInputCapabilities, IUntypedEditorInput, DEFAULT_EDITOR_ASSOCIATION, SideBySideEditor, EditorCloseContext, IEditorWillMoveEvent, IEditorWillOpenEvent, IMatchEditorOptions, GroupModelChangeKind, IActiveEditorChangeEvent, IFindEditorOptions, TEXT_DIFF_EDITOR_ID } from '../../../common/editor.js';
-import { ActiveEditorGroupLockedContext, ActiveEditorDirtyContext, EditorGroupEditorsCountContext, ActiveEditorStickyContext, ActiveEditorPinnedContext, ActiveEditorLastInGroupContext, ActiveEditorFirstInGroupContext, ResourceContextKey, applyAvailableEditorIds, ActiveEditorAvailableEditorIdsContext, ActiveEditorCanSplitInGroupContext, SideBySideEditorActiveContext, TextCompareEditorVisibleContext, TextCompareEditorActiveContext, ActiveEditorContext, ActiveEditorReadonlyContext, ActiveEditorCanRevertContext, ActiveEditorCanToggleReadonlyContext, ActiveCompareEditorCanSwapContext, MultipleEditorsSelectedInGroupContext, TwoEditorsSelectedInGroupContext, SelectedEditorsInGroupFileOrUntitledResourceContextKey, ActiveEditorCannotCloseContext, ActiveEditorInTabStackContext } from '../../../common/contextkeys.js';
+import { ActiveEditorGroupLockedContext, ActiveEditorDirtyContext, EditorGroupEditorsCountContext, ActiveEditorStickyContext, ActiveEditorPinnedContext, ActiveEditorLastInGroupContext, ActiveEditorFirstInGroupContext, ResourceContextKey, applyAvailableEditorIds, ActiveEditorAvailableEditorIdsContext, ActiveEditorCanSplitInGroupContext, SideBySideEditorActiveContext, TextCompareEditorVisibleContext, TextCompareEditorActiveContext, ActiveEditorContext, ActiveEditorReadonlyContext, ActiveEditorCanRevertContext, ActiveEditorCanToggleReadonlyContext, ActiveCompareEditorCanSwapContext, MultipleEditorsSelectedInGroupContext, TwoEditorsSelectedInGroupContext, SelectedEditorsInGroupFileOrUntitledResourceContextKey, ActiveEditorCannotCloseContext } from '../../../common/contextkeys.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { SideBySideEditorInput } from '../../../common/editor/sideBySideEditorInput.js';
 import { Emitter, Event, Relay } from '../../../../base/common/event.js';
@@ -269,7 +269,6 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 		const groupActiveEditorFirstContext = this.editorPartsView.bind(ActiveEditorFirstInGroupContext, this);
 		const groupActiveEditorLastContext = this.editorPartsView.bind(ActiveEditorLastInGroupContext, this);
 		const groupActiveEditorStickyContext = this.editorPartsView.bind(ActiveEditorStickyContext, this);
-		const groupActiveEditorInTabStackContext = this.editorPartsView.bind(ActiveEditorInTabStackContext, this);
 		const groupEditorsCountContext = this.editorPartsView.bind(EditorGroupEditorsCountContext, this);
 		const groupLockedContext = this.editorPartsView.bind(ActiveEditorGroupLockedContext, this);
 
@@ -342,10 +341,6 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 			});
 		};
 
-		const updateActiveEditorInTabStackContext = () => {
-			groupActiveEditorInTabStackContext.set(this.model.activeEditor ? !!this.model.getTabStack(this.model.activeEditor) : false);
-		};
-
 		// Update group contexts based on group changes
 		const updateGroupContextKeys = (e: IGroupModelChangeEvent) => {
 			switch (e.kind) {
@@ -357,7 +352,6 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 					groupActiveEditorLastContext.set(this.model.isLast(this.model.activeEditor));
 					groupActiveEditorPinnedContext.set(this.model.activeEditor ? this.model.isPinned(this.model.activeEditor) : false);
 					groupActiveEditorStickyContext.set(this.model.activeEditor ? this.model.isSticky(this.model.activeEditor) : false);
-					updateActiveEditorInTabStackContext();
 					break;
 				case GroupModelChangeKind.EDITOR_CLOSE:
 					groupActiveEditorPinnedContext.set(this.model.activeEditor ? this.model.isPinned(this.model.activeEditor) : false);
@@ -387,9 +381,6 @@ export class EditorGroupView extends Themable implements IEditorGroupView {
 					multipleEditorsSelectedContext.set(this.model.selectedEditors.length > 1);
 					twoEditorsSelectedContext.set(this.model.selectedEditors.length === 2);
 					selectedEditorsHaveFileOrUntitledResourceContext.set(this.model.selectedEditors.every(e => e.resource && (this.fileService.hasProvider(e.resource) || e.resource.scheme === Schemas.untitled)));
-					break;
-				case GroupModelChangeKind.TAB_STACKS:
-					updateActiveEditorInTabStackContext();
 					break;
 			}
 

@@ -24,9 +24,6 @@ import { Emitter } from '../../../../../base/common/event.js';
 import { basename, isEqual } from '../../../../../base/common/resources.js';
 import { CloseAllEditorGroupsAction } from '../../../../browser/parts/editor/editorActions.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
-import { ActiveEditorInTabStackContext } from '../../../../common/contextkeys.js';
-import { mock } from '../../../../../base/test/common/mock.js';
-import { IContextMenuMenuDelegate, IContextMenuService } from '../../../../../platform/contextview/browser/contextView.js';
 import { IEditorGroupView } from '../../../../browser/parts/editor/editor.js';
 
 suite('EditorGroupsService', () => {
@@ -2393,16 +2390,15 @@ suite('EditorGroupsService', () => {
 		assert.strictEqual(activationEvents[0].reason, GroupActivationReason.DEFAULT);
 	});
 
-	function createTabStacksInstantiationService(contextKeyService?: IContextKeyService): TestInstantiationService {
-		return workbenchInstantiationService({
-			configurationService: () => {
-				const configurationService = new TestConfigurationService({ workbench: { editor: { enableTabStacks: true } } });
-				disposables.add(configurationService.onDidChangeConfigurationEmitter);
+	/**
+	 * Creates an editor part with tab stacks turned on through enforced part options, the only way to
+	 * turn them on.
+	 */
+	async function createTabStacksPart(): Promise<TestEditorPart> {
+		const [part] = await createPart();
+		disposables.add(part.enforcePartOptions({ enableTabStacks: true }));
 
-				return configurationService;
-			},
-			contextKeyService: contextKeyService ? () => contextKeyService : undefined
-		}, disposables);
+		return part;
 	}
 
 	function createNamedTestEditors(...names: string[]): TestFileEditorInput[] {
@@ -2475,7 +2471,7 @@ suite('EditorGroupsService', () => {
 	}
 
 	test('tab stacks - with tab stacks off, adding editors to a tab stack does nothing', async () => {
-		// Setup: a group with the default configuration, where tab stacks are off
+		// Setup: a group with the default part options, where tab stacks are off
 		const [part] = await createPart();
 		const group = part.activeGroup;
 		const [first, , third] = await openPinnedTestEditors(group, '1', '2', '3');
@@ -2487,11 +2483,11 @@ suite('EditorGroupsService', () => {
 		assert.deepStrictEqual({ tabStack, editors: tabStackState(group) }, { tabStack: undefined, editors: '1 2 3*' });
 	});
 
-	test('tab stacks - turning tab stacks off, by the setting or by not showing multiple tabs, removes them', async () => {
+	test('tab stacks - turning tab stacks off, or not showing multiple tabs, removes them', async () => {
 		const results: string[] = [];
 		for (const options of [{ enableTabStacks: false }, { showTabs: 'single' }, { showTabs: 'none' }] as const) {
 			// Setup: a group with a tab stack
-			const [part] = await createPart(createTabStacksInstantiationService());
+			const part = await createTabStacksPart();
 			const group = part.activeGroup;
 			await openFixture(group, '1 2a 3a');
 			const before = tabStackState(group);
@@ -2506,7 +2502,7 @@ suite('EditorGroupsService', () => {
 
 		// Check: the tab stack is gone while off and stays gone once on again
 		assert.deepStrictEqual(results, [
-			// The setting
+			// Tab stacks enforced off
 			'{"enableTabStacks":false}: 1 2a 3a*, then 1 2 3*, then 1 2 3*',
 			// Tabs not shown as multiple
 			'{"showTabs":"single"}: 1 2a 3a*, then 1 2 3*, then 1 2 3*',
@@ -2516,7 +2512,7 @@ suite('EditorGroupsService', () => {
 
 	test('tab stacks - adding and removing editors keeps the tab bar in the order of the editors', async () => {
 		// Setup: five pinned editors
-		const [part] = await createPart(createTabStacksInstantiationService());
+		const part = await createTabStacksPart();
 		const group = part.activeGroup;
 		const [first, , third, , fifth] = await openPinnedTestEditors(group, '1', '2', '3', '4', '5');
 
@@ -2537,7 +2533,7 @@ suite('EditorGroupsService', () => {
 
 	test('tab stacks - adding a preview editor to a tab stack shows it pinned in the tab bar', async () => {
 		// Setup: a pinned editor and a preview editor
-		const [part] = await createPart(createTabStacksInstantiationService());
+		const part = await createTabStacksPart();
 		const group = part.activeGroup;
 		const isTabItalic = () => !!group.element.querySelector('.tab[data-resource-name="2"] .italic');
 		const [pinnedEditor, previewEditor] = createNamedTestEditors('1', '2');
@@ -2558,7 +2554,7 @@ suite('EditorGroupsService', () => {
 
 	test('tab stacks - openEditors from an editor in a tab stack opens the other editors in order after the tab stack', async () => {
 		// Setup: a tab stack of two editors between two other editors
-		const [part] = await createPart(createTabStacksInstantiationService());
+		const part = await createTabStacksPart();
 		const group = part.activeGroup;
 		await openFixture(group, '1 2a 3a 4');
 
@@ -2581,7 +2577,7 @@ suite('EditorGroupsService', () => {
 			['1a 2a 3a 4', '1 5 3'],
 		] as const) {
 			// Setup: the fixture
-			const [part] = await createPart(createTabStacksInstantiationService());
+			const part = await createTabStacksPart();
 			const group = part.activeGroup;
 			await openFixture(group, fixture);
 
@@ -2601,71 +2597,6 @@ suite('EditorGroupsService', () => {
 			'1 3 from 1a 2a 3a 4: 1a* 3a 2a 4',
 			'1 5 3 from 1a 2a 3a 4: 1a* 2a 3a 5 4',
 		]);
-	});
-
-	test('tab stacks - the context menu of a tab tells whether that tab is in a tab stack', async () => {
-		// Setup: record the context key that each context menu is shown with
-		const instantiationService = createTabStacksInstantiationService(new MockScopableContextKeyService());
-		const inTabStackValues: (boolean | undefined)[] = [];
-		// The context menu UI is the boundary: it renders the menu the tab asks for
-		instantiationService.stub(IContextMenuService, new class extends mock<IContextMenuService>() {
-			override showContextMenu(delegate: IContextMenuMenuDelegate): void {
-				inTabStackValues.push(delegate.contextKeyService?.getContextKeyValue<boolean>(ActiveEditorInTabStackContext.key));
-			}
-		});
-
-		// Setup: two editors, the second one in a tab stack and active
-		const [part] = await createPart(instantiationService);
-		const group = part.activeGroup;
-		const [, second] = await openPinnedTestEditors(group, '1', '2');
-		group.addEditorsToTabStack([second]);
-
-		// Right-click the tab in the tab stack, then the one outside of it
-		for (const name of ['2', '1']) {
-			group.element.querySelector(`.tab[data-resource-name="${name}"]`)?.dispatchEvent(new MouseEvent('contextmenu'));
-		}
-
-		// Check: each menu follows the right-clicked tab, not the active editor
-		assert.deepStrictEqual(inTabStackValues, [true, false]);
-	});
-
-	test('tab stacks - the context key of the active editor in a tab stack follows the active editor and the tab stacks of the group', async () => {
-		// Setup: three pinned editors
-		const [part] = await createPart(createTabStacksInstantiationService(new MockScopableContextKeyService()));
-		const group = part.activeGroup;
-		const inTabStack = (editorGroup: IEditorGroup) => editorGroup.scopedContextKeyService.getContextKeyValue<boolean>(ActiveEditorInTabStackContext.key);
-		const [first, second, third] = await openPinnedTestEditors(group, '1', '2', '3');
-		const initially = inTabStack(group);
-
-		// Add the active editor, and copy the group
-		group.addEditorsToTabStack([third]);
-		const afterAddingActiveEditor = inTabStack(group);
-		const copiedGroup = inTabStack(part.copyGroup(group, group, GroupDirection.RIGHT));
-		part.activateGroup(group);
-
-		// Open editors outside and inside of the tab stack
-		await group.openEditor(first);
-		const afterOpeningEditorOutside = inTabStack(group);
-		await group.openEditor(third);
-		const afterOpeningEditorInside = inTabStack(group);
-
-		// Remove, then add again and turn tab stacks off
-		group.removeEditorsFromTabStack([third]);
-		const afterRemoving = inTabStack(group);
-		group.addEditorsToTabStack([second, third]);
-		disposables.add(part.enforcePartOptions({ showTabs: 'single' }));
-		const afterTurningOff = inTabStack(group);
-
-		// Check: the key after each step
-		assert.deepStrictEqual({ initially, afterAddingActiveEditor, copiedGroup, afterOpeningEditorOutside, afterOpeningEditorInside, afterRemoving, afterTurningOff }, {
-			initially: false,
-			afterAddingActiveEditor: true,
-			copiedGroup: true,
-			afterOpeningEditorOutside: false,
-			afterOpeningEditorInside: true,
-			afterRemoving: false,
-			afterTurningOff: false
-		});
 	});
 
 	ensureNoDisposablesAreLeakedInTestSuite();

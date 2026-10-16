@@ -46,7 +46,6 @@ export const DEFAULT_EDITOR_PART_OPTIONS: IEditorPartOptions = {
 	tabSizingFixedMaxWidth: 160,
 	pinnedTabSizing: 'normal',
 	pinnedTabsOnSeparateRow: false,
-	enableTabStacks: false,
 	tabHeight: 'default',
 	preventPinnedEditorClose: 'keyboardAndMouse',
 	titleScrollbarSizing: 'default',
@@ -138,7 +137,6 @@ function validateEditorPartOptions(options: IEditorPartOptions): IEditorPartOpti
 		'showTabIndex': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.showTabIndex),
 		'alwaysShowEditorActions': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.alwaysShowEditorActions),
 		'pinnedTabsOnSeparateRow': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.pinnedTabsOnSeparateRow),
-		'enableTabStacks': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.enableTabStacks),
 		'focusRecentEditorAfterClose': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.focusRecentEditorAfterClose),
 		'showIcons': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.showIcons),
 		'enablePreview': new BooleanVerifier(DEFAULT_EDITOR_PART_OPTIONS.enablePreview),
@@ -190,10 +188,11 @@ function validateEditorPartOptions(options: IEditorPartOptions): IEditorPartOpti
 }
 
 /**
- * Returns whether the editor part shows tab stacks: the setting is on and tabs are shown as multiple tabs.
+ * Returns whether the editor part shows tab stacks: enforced part options turn them on and tabs are
+ * shown as multiple tabs.
  */
 export function isTabStacksEnabled(options: IEditorPartOptions): boolean {
-	return options.enableTabStacks && options.showTabs === 'multiple';
+	return options.enableTabStacks === true && options.showTabs === 'multiple';
 }
 
 /**

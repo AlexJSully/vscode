@@ -469,23 +469,22 @@ suite('Workbench editor utils', () => {
 		assert.strictEqual(part.partOptions.tabActionReserveSpace, false);
 	});
 
-	test('tab stacks are off in the default part options, invalid values fall back to it, and tab stacks are only enabled with multiple tabs', () => {
+	test('tab stacks are not read from the configuration, and only enforced part options with multiple tabs enable them', () => {
 		// Setup: read the part options from a configuration of the editor settings
 		const themeService = new TestThemeService();
 		const getOptions = (editor: object) => getEditorPartOptions(new TestConfigurationService({ workbench: { editor } }), themeService);
+		const configuredOptions = getOptions({ enableTabStacks: true });
 
-		// Check: the option, then whether tab stacks are enabled for each way of showing tabs
+		// Check: the configured value is dropped, then whether tab stacks are enabled for each way of showing tabs
 		assert.deepStrictEqual({
-			default: DEFAULT_EDITOR_PART_OPTIONS.enableTabStacks,
-			configured: getOptions({ enableTabStacks: true }).enableTabStacks,
-			invalid: getOptions({ enableTabStacks: 'yes' }).enableTabStacks,
-			enabledWithMultipleTabs: isTabStacksEnabled(getOptions({ enableTabStacks: true })),
-			enabledWithSingleTab: isTabStacksEnabled(getOptions({ enableTabStacks: true, showTabs: 'single' })),
-			enabledWithoutTabs: isTabStacksEnabled(getOptions({ enableTabStacks: true, showTabs: 'none' }))
+			configured: configuredOptions.enableTabStacks,
+			enabledByConfiguration: isTabStacksEnabled(configuredOptions),
+			enabledWithMultipleTabs: isTabStacksEnabled({ ...configuredOptions, enableTabStacks: true }),
+			enabledWithSingleTab: isTabStacksEnabled({ ...configuredOptions, enableTabStacks: true, showTabs: 'single' }),
+			enabledWithoutTabs: isTabStacksEnabled({ ...configuredOptions, enableTabStacks: true, showTabs: 'none' })
 		}, {
-			default: false,
-			configured: true,
-			invalid: false,
+			configured: undefined,
+			enabledByConfiguration: false,
 			enabledWithMultipleTabs: true,
 			enabledWithSingleTab: false,
 			enabledWithoutTabs: false
