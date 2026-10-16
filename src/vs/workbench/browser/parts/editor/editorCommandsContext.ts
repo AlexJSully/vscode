@@ -9,7 +9,7 @@ import { URI } from '../../../../base/common/uri.js';
 import { IListService } from '../../../../platform/list/browser/listService.js';
 import { IEditorCommandsContext, isEditorCommandsContext, IEditorIdentifier, isEditorIdentifier } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
-import { ITabStack } from '../../../common/editor/editorGroupModel.js';
+import { ITabStack } from '../../../common/editor/editorGroupTabStacks.js';
 import { IEditorGroup, IEditorGroupsService, isEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
 import { IEditorService } from '../../../services/editor/common/editorService.js';
 

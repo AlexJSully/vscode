@@ -6,7 +6,8 @@
 import { IUntypedEditorInput, IMatchEditorOptions, EditorsOrder, GroupIdentifier } from '../editor.js';
 import { EditorInput } from './editorInput.js';
 import { Emitter } from '../../../base/common/event.js';
-import { IGroupModelChangeEvent, IReadonlyEditorGroupModel, ITabStack } from './editorGroupModel.js';
+import { IGroupModelChangeEvent, IReadonlyEditorGroupModel } from './editorGroupModel.js';
+import { ITabStack } from './editorGroupTabStacks.js';
 import { Disposable } from '../../../base/common/lifecycle.js';
 
 abstract class FilteredEditorGroupModel extends Disposable implements IReadonlyEditorGroupModel {

@@ -10,7 +10,7 @@ import { localize } from '../../../../nls.js';
 import { IAccessibilityService } from '../../../../platform/accessibility/common/accessibility.js';
 import { IQuickInputService, IQuickPickItem, QuickPickInput } from '../../../../platform/quickinput/common/quickInput.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
-import { isCustomTabStackColor, ITabStack, parseTabStackColor, TAB_STACK_COLORS, TabStackColor, TabStackId, TabStackPresetColor } from '../../../common/editor/editorGroupModel.js';
+import { isCustomTabStackColor, ITabStack, parseTabStackColor, TAB_STACK_COLORS, TabStackColor, TabStackId, TabStackPresetColor } from '../../../common/editor/editorGroupTabStacks.js';
 import { TAB_STACK_COLOR_IDS } from '../../../common/theme.js';
 import { IEditorGroup } from '../../../services/editor/common/editorGroupsService.js';
 import { setTabStackCollapsed } from './editor.js';

@@ -20,7 +20,7 @@ import { ILayoutService } from '../../../../platform/layout/browser/layoutServic
 import { IQuickInputService } from '../../../../platform/quickinput/common/quickInput.js';
 import { defaultButtonStyles, defaultInputBoxStyles } from '../../../../platform/theme/browser/defaultStyles.js';
 import { asCssVariable } from '../../../../platform/theme/common/colorRegistry.js';
-import { isCustomTabStackColor, ITabStack, ITabStackUpdate, TAB_STACK_COLORS, TabStackColor, TabStackId } from '../../../common/editor/editorGroupModel.js';
+import { isCustomTabStackColor, ITabStack, ITabStackUpdate, TAB_STACK_COLORS, TabStackColor, TabStackId } from '../../../common/editor/editorGroupTabStacks.js';
 import { TAB_STACK_COLOR_IDS } from '../../../common/theme.js';
 import { IEditorGroup, TabStackEditorFocus } from '../../../services/editor/common/editorGroupsService.js';
 import { getTabStackColorLabel, inputCustomTabStackColor, TAB_STACK_CUSTOM_COLOR_LABEL } from './tabStackPickers.js';

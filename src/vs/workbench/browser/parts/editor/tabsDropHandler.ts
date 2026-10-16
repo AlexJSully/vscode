@@ -5,7 +5,8 @@
 
 import { LocalSelectionTransfer } from '../../../../platform/dnd/browser/dnd.js';
 import { GroupIdentifier } from '../../../common/editor.js';
-import { IReadonlyEditorGroupModel, ITabStack, TabStackId } from '../../../common/editor/editorGroupModel.js';
+import { IReadonlyEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
+import { ITabStack, TabStackId } from '../../../common/editor/editorGroupTabStacks.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
 import { StickyEditorGroupModel, UnstickyEditorGroupModel } from '../../../common/editor/filteredEditorGroupModel.js';
 import { DraggedEditorGroupIdentifier, DraggedEditorIdentifier } from '../../dnd.js';

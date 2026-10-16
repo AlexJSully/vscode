@@ -34,7 +34,8 @@ import { TreeViewsDnDService } from '../../../../../editor/common/services/treeV
 import { CodeEditorWidget } from '../../../../../editor/browser/widget/codeEditor/codeEditorWidget.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { EditorInputCapabilities, EditorsOrder, IEditorPartOptions, IToolbarActions, Verbosity } from '../../../../common/editor.js';
-import { EditorGroupModel, ITabStackUpdate, TabStackColor, TabStackId } from '../../../../common/editor/editorGroupModel.js';
+import { EditorGroupModel } from '../../../../common/editor/editorGroupModel.js';
+import { ITabStackUpdate, TabStackColor, TabStackId } from '../../../../common/editor/editorGroupTabStacks.js';
 import { EDITOR_GROUP_HEADER_NO_TABS_BACKGROUND, EDITOR_GROUP_HEADER_TABS_BACKGROUND } from '../../../../common/theme.js';
 import { DEFAULT_EDITOR_PART_OPTIONS, IEditorGroupMenuIds, IEditorGroupsView, IEditorGroupView, IEditorPartsView, isTabStacksEnabled } from '../../../../browser/parts/editor/editor.js';
 import { BreadcrumbsService, IBreadcrumbsService } from '../../../../browser/parts/editor/breadcrumbs.js';

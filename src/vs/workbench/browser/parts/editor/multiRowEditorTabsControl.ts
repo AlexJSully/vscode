@@ -13,7 +13,8 @@ import { EditorInput } from '../../../common/editor/editorInput.js';
 import { Disposable } from '../../../../base/common/lifecycle.js';
 import { StickyEditorGroupModel, UnstickyEditorGroupModel } from '../../../common/editor/filteredEditorGroupModel.js';
 import { IEditorTitleControlDimensions } from './editorTitleControl.js';
-import { IReadonlyEditorGroupModel, TabStackId } from '../../../common/editor/editorGroupModel.js';
+import { IReadonlyEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
+import { TabStackId } from '../../../common/editor/editorGroupTabStacks.js';
 import { TabStackEditorFocus } from '../../../services/editor/common/editorGroupsService.js';
 
 export class MultiRowEditorControl extends Disposable implements IEditorTabsControl {

@@ -37,7 +37,8 @@ import { LocalSelectionTransfer } from '../../../../platform/dnd/browser/dnd.js'
 import { DraggedTreeItemsIdentifier } from '../../../../editor/common/services/treeViewsDnd.js';
 import { IEditorResolverService } from '../../../services/editor/common/editorResolverService.js';
 import { IEditorTitleControlDimensions } from './editorTitleControl.js';
-import { IReadonlyEditorGroupModel, TabStackId } from '../../../common/editor/editorGroupModel.js';
+import { IReadonlyEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
+import { TabStackId } from '../../../common/editor/editorGroupTabStacks.js';
 import { EDITOR_CORE_NAVIGATION_COMMANDS } from './editorCommands.js';
 import { IAuxiliaryEditorPart, MergeGroupMode, TabStackEditorFocus } from '../../../services/editor/common/editorGroupsService.js';
 import { isMacintosh } from '../../../../base/common/platform.js';

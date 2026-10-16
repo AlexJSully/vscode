@@ -55,7 +55,8 @@ import { DraggedTreeItemsIdentifier } from '../../../../editor/common/services/t
 import { IEditorResolverService } from '../../../services/editor/common/editorResolverService.js';
 import { IEditorTitleControlDimensions } from './editorTitleControl.js';
 import { StickyEditorGroupModel, UnstickyEditorGroupModel } from '../../../common/editor/filteredEditorGroupModel.js';
-import { IReadonlyEditorGroupModel, TabStackId } from '../../../common/editor/editorGroupModel.js';
+import { IReadonlyEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
+import { TabStackId } from '../../../common/editor/editorGroupTabStacks.js';
 import { IHostService } from '../../../services/host/browser/host.js';
 import { BugIndicatingError } from '../../../../base/common/errors.js';
 import { applyDragImage } from '../../../../base/browser/ui/dnd/dnd.js';

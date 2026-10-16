@@ -9,7 +9,7 @@ import { foreground } from '../../platform/theme/common/colors/baseColors.js';
 import { IColorTheme } from '../../platform/theme/common/themeService.js';
 import { Color } from '../../base/common/color.js';
 import { ColorScheme } from '../../platform/theme/common/theme.js';
-import type { TabStackPresetColor } from './editor/editorGroupModel.js';
+import type { TabStackPresetColor } from './editor/editorGroupTabStacks.js';
 
 // < --- Workbench (not customizable) --- >
 

@@ -5,7 +5,8 @@
 
 import { GroupIdentifier, IWorkbenchEditorConfiguration, IEditorIdentifier, IEditorCloseEvent, IEditorPartOptions, IEditorPartOptionsChangeEvent, SideBySideEditor, EditorCloseContext, IEditorPane, IEditorPartLimitOptions, IEditorPartDecorationOptions, IEditorWillOpenEvent, EditorInputWithOptions, EditorsOrder } from '../../../common/editor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
-import { IReadonlyEditorGroupModel, ITabStackRecord, TabStackId } from '../../../common/editor/editorGroupModel.js';
+import { IReadonlyEditorGroupModel } from '../../../common/editor/editorGroupModel.js';
+import { ITabStackRecord, TabStackId } from '../../../common/editor/editorGroupTabStacks.js';
 import { MenuId } from '../../../../platform/actions/common/actions.js';
 import { IEditorGroup, GroupDirection, IMergeGroupOptions, GroupsOrder, GroupsArrangement, IAuxiliaryEditorPart, IEditorPart, IModalEditorPart, GroupActivationReason } from '../../../services/editor/common/editorGroupsService.js';
 import { IDisposable } from '../../../../base/common/lifecycle.js';

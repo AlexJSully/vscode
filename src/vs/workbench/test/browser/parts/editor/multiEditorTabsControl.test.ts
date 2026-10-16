@@ -27,7 +27,8 @@ import { ActiveEditorInTabStackContext, ActiveEditorStickyContext, EditorGroupHa
 import { MultiEditorTabsControl } from '../../../../browser/parts/editor/multiEditorTabsControl.js';
 import { MultiRowEditorControl } from '../../../../browser/parts/editor/multiRowEditorTabsControl.js';
 import { EditorInputCapabilities, EditorsOrder, IEditorPartOptions, Verbosity } from '../../../../common/editor.js';
-import { EditorGroupModel, ITabStackUpdate, TabStackId } from '../../../../common/editor/editorGroupModel.js';
+import { EditorGroupModel } from '../../../../common/editor/editorGroupModel.js';
+import { ITabStackUpdate, TabStackId } from '../../../../common/editor/editorGroupTabStacks.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
 import { DecorationsService } from '../../../../services/decorations/browser/decorationsService.js';
 import { IDecorationsService } from '../../../../services/decorations/common/decorations.js';

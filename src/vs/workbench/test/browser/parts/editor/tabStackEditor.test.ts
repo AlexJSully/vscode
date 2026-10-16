@@ -19,7 +19,8 @@ import { NullHoverService } from '../../../../../platform/hover/test/browser/nul
 import { IInputOptions, IQuickInputService } from '../../../../../platform/quickinput/common/quickInput.js';
 import { TabStackEditor, TabStackEditorGroup } from '../../../../browser/parts/editor/tabStackEditor.js';
 import { EditorsOrder } from '../../../../common/editor.js';
-import { EditorGroupModel, TabStackColor, TabStackId } from '../../../../common/editor/editorGroupModel.js';
+import { EditorGroupModel } from '../../../../common/editor/editorGroupModel.js';
+import { TabStackColor, TabStackId } from '../../../../common/editor/editorGroupTabStacks.js';
 import { TabStackEditorFocus } from '../../../../services/editor/common/editorGroupsService.js';
 import { getShownTabStackEditor, TestFileEditorInput, workbenchInstantiationService } from '../../workbenchTestServices.js';
 

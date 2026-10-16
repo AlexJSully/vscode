@@ -21,7 +21,7 @@ import { IEditorGroupView } from '../../../../browser/parts/editor/editor.js';
 import { addEditorsToTabStackAndEditNew, changeTabStackColor, expandTabStack, getCollapsedTabStackPicks, getTabStackColorPicks, getTabStackPicks, inputTabStackLabel, ITabStackColorPickItem, parseCustomTabStackColor, pickTabStack, pickTabStackColor, renameTabStack } from '../../../../browser/parts/editor/tabStackPickers.js';
 import { EditorExtensions, IEditorFactoryRegistry } from '../../../../common/editor.js';
 import { EditorInput } from '../../../../common/editor/editorInput.js';
-import { ITabStack } from '../../../../common/editor/editorGroupModel.js';
+import { ITabStack } from '../../../../common/editor/editorGroupTabStacks.js';
 import { IEditorGroupsService } from '../../../../services/editor/common/editorGroupsService.js';
 import { createEditorPart, getShownTabStackEditor, registerTestEditor, TestEditorInput, TestFileEditorInput, workbenchInstantiationService, workbenchTeardown } from '../../workbenchTestServices.js';
 

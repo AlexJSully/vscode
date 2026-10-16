@@ -126,7 +126,8 @@ import { TextEditorPaneSelection } from '../../browser/parts/editor/textEditor.j
 import { TextResourceEditor } from '../../browser/parts/editor/textResourceEditor.js';
 import { IPaneCompositePart } from '../../browser/parts/paneCompositePart.js';
 import { EditorExtensions, EditorInputCapabilities, EditorInputWithOptions, EditorPaneSelectionChangeReason, EditorsOrder, EditorExtensions as Extensions, GroupIdentifier, IActiveEditorChangeEvent, IEditorCloseEvent, IEditorFactoryRegistry, IEditorIdentifier, IEditorOpenContext, IEditorPane, IEditorPaneSelection, IEditorPartOptions, IEditorSerializer, IEditorWillMoveEvent, IEditorWillOpenEvent, IFileEditorInput, IMoveResult, IResourceDiffEditorInput, IRevertOptions, ISaveOptions, ITextDiffEditorPane, IToolbarActions, IUntitledTextResourceEditorInput, IUntypedEditorInput, IVisibleEditorPane } from '../../common/editor.js';
-import { IGroupModelChangeEvent, ITabStack, ITabStackRecord, ITabStackUpdate, TabStackId } from '../../common/editor/editorGroupModel.js';
+import { IGroupModelChangeEvent } from '../../common/editor/editorGroupModel.js';
+import { ITabStack, ITabStackRecord, ITabStackUpdate, TabStackId } from '../../common/editor/editorGroupTabStacks.js';
 import { EditorInput } from '../../common/editor/editorInput.js';
 import { SideBySideEditorInput } from '../../common/editor/sideBySideEditorInput.js';
 import { TextResourceEditorInput } from '../../common/editor/textResourceEditorInput.js';
