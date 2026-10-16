@@ -14,6 +14,7 @@ import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.
 import { ContextKeyValue, IContextKeyService, RawContextKey } from '../../../../platform/contextkey/common/contextkey.js';
 import { URI } from '../../../../base/common/uri.js';
 import { IGroupModelChangeEvent } from '../../../common/editor/editorGroupModel.js';
+import { ITabStack } from '../../../common/editor/editorGroupTabStacks.js';
 import { IRectangle } from '../../../../platform/window/common/window.js';
 import { IMenuChangeEvent, MenuId } from '../../../../platform/actions/common/actions.js';
 import { DeepPartial } from '../../../../base/common/types.js';
@@ -1062,6 +1063,24 @@ export interface IEditorGroup {
 	 * if unspecified.
 	 */
 	unstickEditor(editor?: EditorInput): void;
+
+	/**
+	 * Returns the tab stack the editor belongs to, if any. Tab stacks are runs of adjacent editors
+	 * that only exist while tab stacks apply to the group.
+	 */
+	getTabStack(editor: EditorInput): ITabStack | undefined;
+
+	/**
+	 * Adds editors to a new tab stack, moving them next to each other, pinning preview editors and
+	 * skipping sticky editors. Returns `undefined` when no tab stack took the editors.
+	 */
+	addEditorsToTabStack(editors: readonly EditorInput[]): ITabStack | undefined;
+
+	/**
+	 * Removes editors from their tab stacks. Each editor moves out through the nearer edge, and a tab
+	 * stack without editors is deleted.
+	 */
+	removeEditorsFromTabStack(editors: readonly EditorInput[]): void;
 
 	/**
 	 * Whether this editor group should be locked or not.

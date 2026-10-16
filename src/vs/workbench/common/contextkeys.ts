@@ -84,6 +84,7 @@ export const ActiveEditorCanToggleReadonlyContext = new RawContextKey<boolean>('
 export const ActiveEditorCanRevertContext = new RawContextKey<boolean>('activeEditorCanRevert', false, localize('activeEditorCanRevert', "Whether the active editor can revert"));
 export const ActiveEditorCanSplitInGroupContext = new RawContextKey<boolean>('activeEditorCanSplitInGroup', true);
 export const ActiveEditorCannotCloseContext = new RawContextKey<boolean>('activeEditorCannotClose', false, localize('activeEditorCannotClose', "Whether the active editor cannot be closed through standard user actions"));
+export const ActiveEditorInTabStackContext = new RawContextKey<boolean>('activeEditorIsInTabStack', false, localize('activeEditorIsInTabStack', "Whether the active editor is in a tab stack of its group"));
 
 // Editor Kind Context Keys
 export const ActiveEditorContext = new RawContextKey<string | null>('activeEditor', null, { type: 'string', description: localize('activeEditor', "The identifier of the active editor") });
@@ -127,6 +128,11 @@ export const IsMainEditorCenteredLayoutContext = new RawContextKey<boolean>('isC
 export const SplitEditorsVertically = new RawContextKey<boolean>('splitEditorsVertically', false, localize('splitEditorsVertically', "Whether editors split vertically"));
 export const MainEditorAreaVisibleContext = new RawContextKey<boolean>('mainEditorAreaVisible', true, localize('mainEditorAreaVisible', "Whether the editor area in the main window is visible"));
 export const EditorTabsVisibleContext = new RawContextKey<boolean>('editorTabsVisible', true, localize('editorTabsVisible', "Whether editor tabs are visible"));
+
+export const TabStacksEnabledContext = ContextKeyExpr.and(
+	ContextKeyExpr.has('config.workbench.editor.enableTabStacks'),
+	EditorTabsVisibleContext
+)!;
 
 //#endregion
 

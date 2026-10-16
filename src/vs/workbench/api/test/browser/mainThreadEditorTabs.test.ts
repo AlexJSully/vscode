@@ -94,6 +94,50 @@ suite('MainThreadEditorTabs', () => {
 		});
 	});
 
+	test('tab stack changes do not rebuild the tabs model', async () => {
+		// Setup: count each rebuild of the tabs model, which reads all groups
+		let groupsReadCount = 0;
+		const editorGroupsService = new class extends mock<IEditorGroupsService>() {
+			override readonly activeModalEditorPart = undefined;
+			override readonly onDidAddGroup = Event.None;
+			override readonly onDidRemoveGroup = Event.None;
+			override readonly whenReady = Promise.resolve();
+			override get groups(): readonly IEditorGroup[] {
+				groupsReadCount++;
+				return [];
+			}
+		}();
+		const editorChanges = disposables.add(new Emitter<IEditorsChangeEvent>());
+		const editorService = new class extends mock<IEditorService>() {
+			override readonly onDidEditorsChange = editorChanges.event;
+		}();
+
+		// Setup: create the tabs model, then reset the count
+		disposables.add(new MainThreadEditorTabs(
+			SingleProxyRPCProtocol({}),
+			editorGroupsService,
+			new TestConfigurationService(),
+			new NullLogService(),
+			editorService,
+		));
+		await Promise.resolve();
+		groupsReadCount = 0;
+
+		// Fire a tab stack change, then a change that rebuilds the tabs model
+		editorChanges.fire({ groupId: 1, event: { kind: GroupModelChangeKind.TAB_STACKS } });
+		const rebuildsAfterTabStacks = groupsReadCount;
+		editorChanges.fire({ groupId: 1, event: { kind: GroupModelChangeKind.GROUP_LOCKED } });
+
+		// Check: only the second change rebuilds the tabs model
+		assert.deepStrictEqual({
+			rebuildsAfterTabStacks,
+			rebuildsAfterGroupLocked: groupsReadCount,
+		}, {
+			rebuildsAfterTabStacks: 0,
+			rebuildsAfterGroupLocked: 1,
+		});
+	});
+
 	test('updating a background tab does not make it the active tab', async () => {
 		class NamedEditorInput extends TestEditorInput {
 			private _dirty = false;

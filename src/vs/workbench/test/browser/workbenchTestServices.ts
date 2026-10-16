@@ -127,6 +127,7 @@ import { TextResourceEditor } from '../../browser/parts/editor/textResourceEdito
 import { IPaneCompositePart } from '../../browser/parts/paneCompositePart.js';
 import { EditorExtensions, EditorInputCapabilities, EditorInputWithOptions, EditorPaneSelectionChangeReason, EditorsOrder, EditorExtensions as Extensions, GroupIdentifier, IActiveEditorChangeEvent, IEditorCloseEvent, IEditorFactoryRegistry, IEditorIdentifier, IEditorOpenContext, IEditorPane, IEditorPaneSelection, IEditorPartOptions, IEditorSerializer, IEditorWillMoveEvent, IEditorWillOpenEvent, IFileEditorInput, IMoveResult, IResourceDiffEditorInput, IRevertOptions, ISaveOptions, ITextDiffEditorPane, IToolbarActions, IUntitledTextResourceEditorInput, IUntypedEditorInput, IVisibleEditorPane } from '../../common/editor.js';
 import { IGroupModelChangeEvent } from '../../common/editor/editorGroupModel.js';
+import { ITabStack } from '../../common/editor/editorGroupTabStacks.js';
 import { EditorInput } from '../../common/editor/editorInput.js';
 import { SideBySideEditorInput } from '../../common/editor/sideBySideEditorInput.js';
 import { TextResourceEditorInput } from '../../common/editor/textResourceEditorInput.js';
@@ -1016,6 +1017,9 @@ export class TestEditorGroupView implements IEditorGroupView {
 	pinEditor(_editor?: EditorInput): void { }
 	stickEditor(editor?: EditorInput | undefined): void { }
 	unstickEditor(editor?: EditorInput | undefined): void { }
+	getTabStack(_editor: EditorInput): ITabStack | undefined { return undefined; }
+	addEditorsToTabStack(_editors: readonly EditorInput[]): ITabStack | undefined { return undefined; }
+	removeEditorsFromTabStack(_editors: readonly EditorInput[]): void { }
 	lock(locked: boolean): void { }
 	focus(): void { }
 	get scopedContextKeyService(): IContextKeyService { throw new Error('not implemented'); }

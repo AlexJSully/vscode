@@ -5,6 +5,7 @@
 
 import { IJSONSchema } from '../../../../base/common/jsonSchema.js';
 import { KeyChord, KeyCode, KeyMod } from '../../../../base/common/keyCodes.js';
+import { DisposableStore, IDisposable } from '../../../../base/common/lifecycle.js';
 import { Schemas, matchesScheme } from '../../../../base/common/network.js';
 import { extname, isEqual } from '../../../../base/common/resources.js';
 import { isNumber, isObject, isString, isUndefined } from '../../../../base/common/types.js';
@@ -13,7 +14,7 @@ import { Codicon } from '../../../../base/common/codicons.js';
 import { EditorContextKeys } from '../../../../editor/common/editorContextKeys.js';
 import { localize, localize2 } from '../../../../nls.js';
 import { Categories } from '../../../../platform/action/common/actionCommonCategories.js';
-import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
+import { Action2, MenuId, MenuRegistry, registerAction2 } from '../../../../platform/actions/common/actions.js';
 import { CommandsRegistry, ICommandHandler, ICommandService } from '../../../../platform/commands/common/commands.js';
 import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
 import { ContextKeyExpr } from '../../../../platform/contextkey/common/contextkey.js';
@@ -27,7 +28,7 @@ import { ITelemetryService } from '../../../../platform/telemetry/common/telemet
 import { ActiveGroupEditorsByMostRecentlyUsedQuickAccess } from './editorQuickAccess.js';
 import { SideBySideEditor } from './sideBySideEditor.js';
 import { TextDiffEditor } from './textDiffEditor.js';
-import { ActiveEditorCanSplitInGroupContext, ActiveEditorGroupEmptyContext, ActiveEditorGroupLockedContext, ActiveEditorStickyContext, EditorPartModalCanMoveToEditorAreaContext, EditorPartModalContext, EditorPartModalMaximizedContext, EditorPartModalNavigationContext, EditorPartModalSidebarContext, IsSessionsWindowContext, MultipleEditorGroupsContext, SideBySideEditorActiveContext, TextCompareEditorActiveContext } from '../../../common/contextkeys.js';
+import { ActiveEditorCanSplitInGroupContext, ActiveEditorGroupEmptyContext, ActiveEditorGroupLockedContext, ActiveEditorInTabStackContext, ActiveEditorStickyContext, EditorPartModalCanMoveToEditorAreaContext, EditorPartModalContext, EditorPartModalMaximizedContext, EditorPartModalNavigationContext, EditorPartModalSidebarContext, IsSessionsWindowContext, MultipleEditorGroupsContext, SideBySideEditorActiveContext, TabStacksEnabledContext, TextCompareEditorActiveContext } from '../../../common/contextkeys.js';
 import { CloseDirection, EditorInputCapabilities, EditorsOrder, IResourceDiffEditorInput, IUntitledTextResourceEditorInput, isDiffEditorInput, isEditorInputWithOptionsAndGroup } from '../../../common/editor.js';
 import { IMultiDiffEditorOptions } from '../../../../editor/common/multiDiffEditor.js';
 import { EditorInput } from '../../../common/editor/editorInput.js';
@@ -71,6 +72,9 @@ export const REOPEN_ACTIVE_EDITOR_WITH_COMMAND_ID = 'reopenActiveEditorWith';
 
 export const PIN_EDITOR_COMMAND_ID = 'workbench.action.pinEditor';
 export const UNPIN_EDITOR_COMMAND_ID = 'workbench.action.unpinEditor';
+
+export const ADD_EDITOR_TO_NEW_TAB_STACK_COMMAND_ID = 'workbench.action.addEditorToNewTabStack';
+export const REMOVE_EDITOR_FROM_TAB_STACK_COMMAND_ID = 'workbench.action.removeEditorFromTabStack';
 
 export const SPLIT_EDITOR = 'workbench.action.splitEditor';
 export const SPLIT_EDITOR_UP = 'workbench.action.splitEditorUp';
@@ -1693,6 +1697,57 @@ function registerModalEditorCommands(): void {
 	});
 }
 
+/**
+ * Registers the commands that add editors to a new tab stack and remove them from their tab stack,
+ * in the Command Palette and in the tab context menu after Pin and Unpin.
+ */
+export function registerTabStackCommands(): IDisposable {
+	const disposables = new DisposableStore();
+	const notStickyPrecondition = ContextKeyExpr.and(TabStacksEnabledContext, ActiveEditorStickyContext.toNegated());
+	const inTabStackPrecondition = ContextKeyExpr.and(TabStacksEnabledContext, ActiveEditorInTabStackContext);
+
+	disposables.add(registerAction2(class extends Action2 {
+		constructor() {
+			super({
+				id: ADD_EDITOR_TO_NEW_TAB_STACK_COMMAND_ID,
+				title: localize2('addEditorToNewTabStack', "Add Editor to New Tab Stack"),
+				category: Categories.View,
+				precondition: notStickyPrecondition,
+				f1: true
+			});
+		}
+		run(accessor: ServicesAccessor, ...args: unknown[]): void {
+			// A tab stack belongs to one group, so only the editors of the first group join it
+			const groupContext = resolveCommandsContext(args, accessor.get(IEditorService), accessor.get(IEditorGroupsService), accessor.get(IListService)).groupedEditors.at(0);
+			groupContext?.group.addEditorsToTabStack(groupContext.editors);
+		}
+	}));
+
+	disposables.add(registerAction2(class extends Action2 {
+		constructor() {
+			super({
+				id: REMOVE_EDITOR_FROM_TAB_STACK_COMMAND_ID,
+				title: localize2('removeEditorFromTabStack', "Remove Editor from Tab Stack"),
+				category: Categories.View,
+				precondition: inTabStackPrecondition,
+				f1: true
+			});
+		}
+		run(accessor: ServicesAccessor, ...args: unknown[]): void {
+			for (const { group, editors } of resolveCommandsContext(args, accessor.get(IEditorService), accessor.get(IEditorGroupsService), accessor.get(IListService)).groupedEditors) {
+				group.removeEditorsFromTabStack(editors);
+			}
+		}
+	}));
+
+	disposables.add(MenuRegistry.appendMenuItems([
+		{ id: MenuId.EditorTitleContext, item: { command: { id: ADD_EDITOR_TO_NEW_TAB_STACK_COMMAND_ID, title: localize('addToNewTabStack', "Add to New Tab Stack") }, group: '3_preview', order: 30, when: notStickyPrecondition } },
+		{ id: MenuId.EditorTitleContext, item: { command: { id: REMOVE_EDITOR_FROM_TAB_STACK_COMMAND_ID, title: localize('removeFromTabStack', "Remove from Tab Stack") }, group: '3_preview', order: 32, when: inTabStackPrecondition } }
+	]));
+
+	return disposables;
+}
+
 function isModalEditorPart(obj: unknown): obj is IModalEditorPart {
 	const part = obj as IModalEditorPart | undefined;
 
@@ -1720,4 +1775,5 @@ export function setup(): void {
 	registerSplitEditorCommands();
 	registerFocusEditorGroupWihoutWrapCommands();
 	registerModalEditorCommands();
+	registerTabStackCommands();
 }
