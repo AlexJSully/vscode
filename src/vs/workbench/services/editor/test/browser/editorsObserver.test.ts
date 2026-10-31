@@ -20,6 +20,7 @@ import { TestStorageService } from '../../../../test/common/workbenchTestService
 import { SideBySideEditorInput } from '../../../../common/editor/sideBySideEditorInput.js';
 import { IInstantiationService } from '../../../../../platform/instantiation/common/instantiation.js';
 import { ensureNoDisposablesAreLeakedInTestSuite } from '../../../../../base/test/common/utils.js';
+import { TestConfigurationService } from '../../../../../platform/configuration/test/common/testConfigurationService.js';
 
 suite('EditorsObserver', function () {
 
@@ -38,8 +39,7 @@ suite('EditorsObserver', function () {
 		disposables.clear();
 	});
 
-	async function createPart(): Promise<[TestEditorPart, IInstantiationService]> {
-		const instantiationService = workbenchInstantiationService(undefined, disposables);
+	async function createPart(instantiationService = workbenchInstantiationService(undefined, disposables)): Promise<[TestEditorPart, IInstantiationService]> {
 		instantiationService.invokeFunction(accessor => Registry.as<IEditorFactoryRegistry>(EditorExtensions.EditorFactory).start(accessor));
 
 		const part = await createEditorPart(instantiationService, disposables);
@@ -636,6 +636,38 @@ suite('EditorsObserver', function () {
 		assert.strictEqual(observer.hasEditor({ resource: input2.resource, typeId: input2.typeId, editorId: input2.editorId }), false);
 		assert.strictEqual(observer.hasEditor({ resource: input3.resource, typeId: input3.typeId, editorId: input3.editorId }), true);
 		assert.strictEqual(observer.hasEditor({ resource: input4.resource, typeId: input4.typeId, editorId: input4.editorId }), true);
+	});
+
+	test('observer does not close editors hidden in a collapsed tab stack, but closes editors of an expanded one', async () => {
+		const [part] = await createPart(workbenchInstantiationService({
+			configurationService: () => {
+				const configurationService = new TestConfigurationService({ workbench: { editor: { enableTabStacks: true } } });
+				disposables.add(configurationService.onDidChangeConfigurationEmitter);
+
+				return configurationService;
+			}
+		}, disposables));
+		disposables.add(part.enforcePartOptions({ limit: { enabled: true, value: 3 } }));
+
+		const storage = disposables.add(new TestStorageService());
+		disposables.add(new EditorsObserver(undefined, part, storage));
+
+		const rootGroup = part.activeGroup;
+
+		const input1 = disposables.add(new TestFileEditorInput(URI.parse('foo://bar1'), TEST_EDITOR_INPUT_ID));
+		const input2 = disposables.add(new TestFileEditorInput(URI.parse('foo://bar2'), TEST_EDITOR_INPUT_ID));
+		const input3 = disposables.add(new TestFileEditorInput(URI.parse('foo://bar3'), TEST_EDITOR_INPUT_ID));
+		const input4 = disposables.add(new TestFileEditorInput(URI.parse('foo://bar4'), TEST_EDITOR_INPUT_ID));
+
+		await rootGroup.openEditor(input1, { pinned: true });
+		await rootGroup.openEditor(input2, { pinned: true });
+		await rootGroup.openEditor(input3, { pinned: true });
+		rootGroup.addEditorsToTabStack([input1]);
+		rootGroup.addEditorsToTabStack([input2]);
+		rootGroup.updateTabStack(rootGroup.tabStacks[0].id, { collapsed: true });
+		await rootGroup.openEditor(input4, { pinned: true });
+
+		assert.deepStrictEqual(rootGroup.editors.map(editor => editor.resource?.toString()), ['foo://bar1', 'foo://bar3', 'foo://bar4']);
 	});
 
 	test('observer does not close scratchpads', async () => {

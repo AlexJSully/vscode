@@ -812,5 +812,58 @@ suite('FilteredEditorGroupModel', () => {
 		assert.strictEqual(unstickyFilteredEditorGroup.isTransient(input4), true);
 	});
 
+	test('Sticky/Unsticky getTabStack()', () => {
+		const model = createEditorGroupModel();
+		model.setTabStacksEnabled(true);
+
+		const stickyFilteredEditorGroup = disposables.add(new StickyEditorGroupModel(model));
+		const unstickyFilteredEditorGroup = disposables.add(new UnstickyEditorGroupModel(model));
+
+		const input1 = input();
+		const input2 = input();
+		const input3 = input();
+
+		model.openEditor(input1, { pinned: true, sticky: true });
+		model.openEditor(input2, { pinned: true, active: true });
+		model.openEditor(input3, { pinned: true, active: true });
+		model.addEditorsToTabStack([input2, input3]);
+
+		assert.deepStrictEqual({
+			sticky: stickyFilteredEditorGroup.getTabStack(input2),
+			unsticky: unstickyFilteredEditorGroup.getTabStack(input2)?.editors,
+		}, {
+			sticky: undefined,
+			unsticky: [input2, input3],
+		});
+	});
+
+	test('Sticky/Unsticky forward TAB_STACKS', () => {
+		const model = createEditorGroupModel();
+		model.setTabStacksEnabled(true);
+
+		const stickyFilteredEditorGroup = disposables.add(new StickyEditorGroupModel(model));
+		const unstickyFilteredEditorGroup = disposables.add(new UnstickyEditorGroupModel(model));
+
+		let stickyTabStacksEvents = 0;
+		disposables.add(stickyFilteredEditorGroup.onDidModelChange(e => {
+			if (e.kind === GroupModelChangeKind.TAB_STACKS) {
+				stickyTabStacksEvents++;
+			}
+		}));
+
+		let unstickyTabStacksEvents = 0;
+		disposables.add(unstickyFilteredEditorGroup.onDidModelChange(e => {
+			if (e.kind === GroupModelChangeKind.TAB_STACKS) {
+				unstickyTabStacksEvents++;
+			}
+		}));
+
+		const input1 = input();
+		model.openEditor(input1, { pinned: true, active: true });
+		model.addEditorsToTabStack([input1]);
+
+		assert.deepStrictEqual({ sticky: stickyTabStacksEvents, unsticky: unstickyTabStacksEvents }, { sticky: 1, unsticky: 1 });
+	});
+
 	ensureNoDisposablesAreLeakedInTestSuite();
 });

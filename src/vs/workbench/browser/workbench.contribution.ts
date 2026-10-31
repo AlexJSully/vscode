@@ -283,6 +283,12 @@ const registry = Registry.as<IConfigurationRegistry>(ConfigurationExtensions.Con
 				'default': false,
 				'markdownDescription': localize({ comment: ['{0}, {1} will be a setting name rendered as a link'], key: 'workbench.editor.pinnedTabsOnSeparateRow' }, "When enabled, displays pinned tabs in a separate row above all other tabs. This value is ignored when {0} is not set to {1}.", '`#workbench.editor.showTabs#`', '`multiple`'),
 			},
+			'workbench.editor.enableTabStacks': {
+				'type': 'boolean',
+				'default': false,
+				tags: ['experimental'],
+				'markdownDescription': localize({ comment: ['{0}, {1} will be a setting name rendered as a link'], key: 'workbench.editor.enableTabStacks' }, "When enabled, tabs can be gathered into tab stacks: named, colored groups of adjacent tabs that can be collapsed and dragged together. Pinned tabs cannot be in a tab stack. Tab stacks only apply while {0} is set to {1}; otherwise, and while this setting is off, they are hidden and kept.", '`#workbench.editor.showTabs#`', '`multiple`'),
+			},
 			'workbench.editor.preventPinnedEditorClose': {
 				'type': 'string',
 				'enum': ['keyboardAndMouse', 'keyboard', 'mouse', 'never'],
